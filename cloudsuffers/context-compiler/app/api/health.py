@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
+from app import __version__
 from app.api.dependencies import get_health_service, get_llm_provider
 from app.llm.provider import StructuredGenerationProvider
 from app.models.health import ApplicationHealth, ClickHouseHealth, LLMHealth
@@ -12,9 +13,13 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health", response_model=ApplicationHealth)
 def application_health(request: Request) -> ApplicationHealth:
+    """Lightweight health check with environment info."""
     langfuse_status = getattr(request.app.state, "langfuse", None)
+    settings = request.app.state.settings
     return ApplicationHealth.create(
-        langfuse=langfuse_status.status if langfuse_status else "not_initialized"
+        langfuse=langfuse_status.status if langfuse_status else "not_initialized",
+        environment=settings.app_env,
+        version=__version__,
     )
 
 

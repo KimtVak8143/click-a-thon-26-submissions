@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-UI_DIR="${REPO_ROOT}/ui"
+UI_DIR="$(cd "${REPO_ROOT}/../ui" && pwd)"
 RUNTIME_DIR="${REPO_ROOT}/.run"
 UV_CACHE_DIR="${RUNTIME_DIR}/uv-cache"
 BACKEND_PID_FILE="${RUNTIME_DIR}/backend.pid"
