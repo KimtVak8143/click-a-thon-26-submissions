@@ -57,12 +57,17 @@ Both tiers store **absolute concurrency per `(dims, minute)`** (instantaneous co
 | File | Purpose |
 |---|---|
 | `PLAN.md` | the single design/requirements doc (this file) |
-| **`sql/schema.sql`** | **tables + dictionary + `concurrency_now` view + all MVs** (ingestion, live derivation, hot). Run once. |
+| **`sql/config.sql`** | **tunable knobs (SQL UDFs): bucket width, heartbeat/gap buffer, dim normalization**. Run FIRST; re-run after any change. |
+| **`sql/schema.sql`** | **tables + dictionary + `concurrency_now` view + all MVs** (ingestion, live derivation, hot) + `concurrency_ext_abs` DDL. Run once. |
 | **`sql/ui_queries.sql`** | **dashboard / insight queries** (filter→sum→max/avg; lenient string params) |
 | `sql/seed_sample.sql` | placeholder data (mapping table + dictionary + sample sessions) to smoke-test |
 | `sql/load_sample_csv.sql` | *(optional)* batch-load the provided CSVs → `events_raw` |
 | `sql/backfill_history.sql` | *(optional)* one-shot build of cold/hot from static data |
 | `sql/verify.sql` | *(optional)* serving == brute force; pause-correctness; disjoint tiers |
+| **`sql/approach_session_aware.sql`** | session-aware comparable table `concurrency_sa_abs` (from `session_intervals`) |
+| **`sql/approach_session_independent.sql`** | session-independent table `concurrency_si_abs` (per-event state, no interval reconstruction) |
+| **`sql/approach_extended_dims.sql`** | **extended drill-down table `concurrency_ext_abs`** (core + app/player/audio/subtitle dims); rolls up to core |
+| **`sql/compare_approaches.sql`** | asserts session-aware == session-independent == `concurrency_now` (0 mismatches) |
 
 **Live:** `schema.sql` → point ClickPipes (Redpanda→`events_incoming`) + start producer (MVs auto-populate) → schedule cold-compaction (comment in `schema.sql` D4) → `ui_queries.sql`. **Smoke test:** `schema.sql` → `seed_sample.sql` → `ui_queries.sql`. **Offline w/ CSVs:** `schema.sql` → `load_sample_csv.sql` → `backfill_history.sql` → `verify.sql`.
 
