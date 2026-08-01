@@ -236,7 +236,7 @@ h2 {
 }
 
 .dropzone {
-  min-height: 150px;
+  min-height: 132px;
   border: 1px dashed #cbd5e1;
   border-radius: 8px;
   display: flex;
@@ -247,6 +247,10 @@ h2 {
   cursor: pointer;
   background: #f8fafc;
   text-align: center;
+}
+
+.dropzone + .dropzone {
+  margin-top: 12px;
 }
 
 .dropzone:hover {
@@ -267,6 +271,13 @@ h2 {
 
 .dropzone small {
   color: #64748b;
+}
+
+.dropzone small:first-of-type {
+  color: #0f766e;
+  font: 500 10px 'DM Mono', monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .primary {
@@ -293,6 +304,11 @@ h2 {
 
 .error {
   color: #dc2626;
+  font-size: 13px;
+}
+
+.warning {
+  color: #8a5b10;
   font-size: 13px;
 }
 
@@ -350,6 +366,46 @@ h2 {
   font: 500 24px 'DM Mono', monospace;
 }
 
+.result-banner {
+  margin-bottom: 14px;
+  padding: 15px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  display: grid;
+  gap: 5px;
+  background: #f8fafc;
+}
+
+.result-banner span {
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #64748b;
+  font: 500 10px 'DM Mono', monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.result-banner.valid span {
+  background: #0f766e;
+}
+
+.result-banner.blocked span {
+  background: #b45309;
+}
+
+.result-banner strong {
+  color: #111827;
+  overflow-wrap: anywhere;
+}
+
+.result-banner small {
+  color: #64748b;
+  font: 400 11px 'DM Mono', monospace;
+  overflow-wrap: anywhere;
+}
+
 .hash {
   grid-column: 1 / -1;
 }
@@ -361,6 +417,16 @@ h2 {
   color: #0f766e;
   font-size: 11px;
   text-overflow: ellipsis;
+}
+
+.messages {
+  margin-top: 14px;
+  padding-top: 2px;
+}
+
+.messages p {
+  margin: 8px 0 0;
+  line-height: 1.55;
 }
 
 .pipeline {
