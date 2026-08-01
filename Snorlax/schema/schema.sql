@@ -59,7 +59,7 @@ CREATE DATABASE IF NOT EXISTS sonyliv_concurrency;
 --   · Destination=sonyliv_concurrency.events_incoming · map by field name.
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.events_incoming
 (
-    content_id UInt64, video_session_id String, user_id String,
+    content_id Int64, video_session_id String, user_id String,
     event_type LowCardinality(String), event LowCardinality(String), event_timestamp UInt64,
     platform LowCardinality(String), app_version LowCardinality(String), country LowCardinality(String),
     audio_language LowCardinality(String), subtitle_language LowCardinality(String),
@@ -71,7 +71,7 @@ ENGINE = Null;   -- MV consumes each insert; nothing stored (leaner). To DEBUG t
 -- Canonical typed events.
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.events_raw
 (
-    video_session_id String, user_id String, content_id UInt64,
+    video_session_id String, user_id String, content_id Int64,
     event_type Enum8('VideoSessionStart'=1,'VideoPlay'=2,'VideoHeartbeat'=3,
                      'AppBackgrounded'=4,'AppForegrounded'=5,'VideoSessionEnd'=6,'VideoError'=7,
                      'VideoPause'=8,'AdBreakStart'=9,'VideoSeek'=10),
@@ -88,20 +88,26 @@ TTL toDateTime(event_timestamp) + INTERVAL 30 DAY;  -- aggregates live in cold_a
 
 -- Content metadata.
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.content_dim
-( content_id UInt64, title String, video_type LowCardinality(String), category LowCardinality(String) )
+( content_id Int64, title String, video_type LowCardinality(String), category LowCardinality(String) )
 ENGINE = ReplacingMergeTree ORDER BY content_id;
 
--- Truly-active intervals (state-machine output).
+-- Truly-active intervals (state-machine output). One row per session — the
+-- FULL current set of that session's islands lives in `intervals`, so a
+-- refresh that re-derives fewer islands than before simply ships a shorter
+-- array; ReplacingMergeTree(version) on a single-column key (video_session_id)
+-- means the whole prior row is superseded, so stale islands can never survive
+-- under FINAL (unlike a per-interval key, where a shrunk island count leaves
+-- orphaned high-index rows behind).
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.session_intervals
 (
-    video_session_id String, interval_idx UInt16,
-    active_start DateTime64(3,'UTC'), active_end DateTime64(3,'UTC'),
+    video_session_id String,
+    intervals Array(Tuple(active_start DateTime64(3,'UTC'), active_end DateTime64(3,'UTC'))),
     is_provisional UInt8 DEFAULT 0,
-    content_id UInt64, platform LowCardinality(String), country LowCardinality(String),
+    content_id Int64, platform LowCardinality(String), country LowCardinality(String),
     video_type LowCardinality(String), category LowCardinality(String), version UInt64
 )
-ENGINE = ReplacingMergeTree(version) ORDER BY (video_session_id, interval_idx)
-TTL toDateTime(active_end) + INTERVAL 3 DAY;   -- bound growth; cold_abs already holds the durable aggregate
+ENGINE = ReplacingMergeTree(version) ORDER BY video_session_id
+TTL toDateTime(version/1000) + INTERVAL 3 DAY;   -- bound growth; cold_abs already holds the durable aggregate
 
 -- Serving tiers: ABSOLUTE concurrency per (dims, minute).
 -- cold = ReplacingMergeTree so a re-fired/retried compaction can't double-count
@@ -109,12 +115,12 @@ TTL toDateTime(active_end) + INTERVAL 3 DAY;   -- bound growth; cold_abs already
 -- recomputed wholesale, so plain MergeTree is fine there.
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.concurrency_cold_abs
 ( country LowCardinality(String), platform LowCardinality(String), video_type LowCardinality(String),
-  category LowCardinality(String), minute DateTime('UTC'), content_id UInt64, concurrent UInt32 )
+  category LowCardinality(String), minute DateTime('UTC'), content_id Int64, concurrent UInt32 )
 ENGINE = ReplacingMergeTree ORDER BY (country, platform, video_type, category, minute, content_id);
 
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.concurrency_hot_abs
 ( country LowCardinality(String), platform LowCardinality(String), video_type LowCardinality(String),
-  category LowCardinality(String), minute DateTime('UTC'), content_id UInt64, concurrent UInt32 )
+  category LowCardinality(String), minute DateTime('UTC'), content_id Int64, concurrent UInt32 )
 ENGINE = MergeTree ORDER BY (country, platform, video_type, category, minute, content_id);
 
 -- EXTENDED drill-down serving table: the 4 high-cardinality dims
@@ -127,20 +133,37 @@ ENGINE = MergeTree ORDER BY (country, platform, video_type, category, minute, co
 -- ORDER BY keeps the core key as its PREFIX (country,platform,video_type,category)
 -- then adds the extended dims low→high cardinality, so a core-only filter still
 -- uses the leading key, and this table is a clean superset of the core key.
+-- content_id is Int64 (not UInt64) — same negative-sentinel fix as every other
+-- content_id column (review #1): the catalog has a negative placeholder ID.
 CREATE TABLE IF NOT EXISTS sonyliv_concurrency.concurrency_ext_abs
 ( country LowCardinality(String), platform LowCardinality(String), video_type LowCardinality(String),
   category LowCardinality(String), subtitle_language LowCardinality(String),
   audio_language LowCardinality(String), player_version LowCardinality(String),
-  app_version LowCardinality(String), minute DateTime('UTC'), content_id UInt64, concurrent UInt32 )
+  app_version LowCardinality(String), minute DateTime('UTC'), content_id Int64, concurrent UInt32 )
 ENGINE = MergeTree
 ORDER BY (country, platform, video_type, category, subtitle_language, audio_language, player_version, app_version, minute, content_id);
+
+-- One row per session, incrementally kept up to date (fed by mv_session_last_seen
+-- below). Lets D2's "which sessions are recent" lookup read a tiny per-session
+-- table instead of full-scanning events_raw every 30s (recompute cost O(active
+-- sessions), matching the design doc's claim rather than O(history)).
+CREATE TABLE IF NOT EXISTS sonyliv_concurrency.session_last_seen
+( video_session_id String, last_ts SimpleAggregateFunction(max, DateTime64(3,'UTC')) )
+ENGINE = AggregatingMergeTree ORDER BY video_session_id;
+
+-- Tiny distinct-value table for cheap UI filter dropdowns (fed by mv_dim_values
+-- below), so populating a dropdown doesn't force a cold FINAL + hot union scan
+-- of concurrency_now.
+CREATE TABLE IF NOT EXISTS sonyliv_concurrency.dim_values
+( dim LowCardinality(String), value LowCardinality(String) )
+ENGINE = ReplacingMergeTree ORDER BY (dim, value);
 
 -- =====================================================================
 -- B. DICTIONARY (content enrichment via dictGet)
 -- =====================================================================
 DROP DICTIONARY IF EXISTS sonyliv_concurrency.content_dict;
 CREATE DICTIONARY sonyliv_concurrency.content_dict
-( content_id UInt64, title String, video_type String, category String )
+( content_id Int64, title String, video_type String, category String )
 PRIMARY KEY content_id
 SOURCE(CLICKHOUSE( USER 'default' PASSWORD '' DB 'sonyliv_concurrency' TABLE 'content_dim' ))
 LAYOUT(HASHED()) LIFETIME(MIN 600 MAX 1200);
@@ -154,7 +177,9 @@ FROM sonyliv_concurrency.concurrency_cold_abs FINAL          -- dedup ReplacingM
 UNION ALL
 SELECT country, platform, video_type, category, minute, content_id, concurrent
 FROM sonyliv_concurrency.concurrency_hot_abs
-WHERE minute > (SELECT max(minute) FROM sonyliv_concurrency.concurrency_cold_abs);
+-- coalesce: an empty cold_abs (pure-live deployment, nothing compacted yet) must
+-- not turn into `minute > NULL`, which would silently filter out every hot row.
+WHERE minute > coalesce((SELECT max(minute) FROM sonyliv_concurrency.concurrency_cold_abs), toDateTime(0));
 
 -- =====================================================================
 -- D. MATERIALIZED VIEWS (populate the tables)
@@ -178,25 +203,46 @@ SELECT video_session_id, user_id, content_id, event_type, event,
        norm_dim(player_version)     AS player_version
 FROM sonyliv_concurrency.events_incoming;
 
+-- D1b. events_raw → session_last_seen (incremental, keeps D2's recency lookup tiny).
+CREATE MATERIALIZED VIEW IF NOT EXISTS sonyliv_concurrency.mv_session_last_seen
+TO sonyliv_concurrency.session_last_seen AS
+SELECT video_session_id, max(event_timestamp) AS last_ts
+FROM sonyliv_concurrency.events_raw
+GROUP BY video_session_id;
+
+-- D1c. events_raw → dim_values (incremental, feeds cheap UI dropdowns).
+CREATE MATERIALIZED VIEW IF NOT EXISTS sonyliv_concurrency.mv_dim_values
+TO sonyliv_concurrency.dim_values AS
+SELECT 'platform' AS dim, platform AS value FROM sonyliv_concurrency.events_raw
+UNION ALL
+SELECT 'country' AS dim, country AS value FROM sonyliv_concurrency.events_raw;
+
 -- D2. events_raw → session_intervals (state machine, recent 20-min window).
 -- Events collapsed per (session, ms): deactivate > reactivate > neutral (determinism).
 -- Refresh every 30s (tightened from 1min) so an open session's state reaches
 -- concurrency_now within ~30-60s end-to-end instead of ~60-90s.
+-- Recency lookup reads session_last_seen (O(active sessions)), not a full
+-- events_raw scan. Content enrichment is a LEFT JOIN against content_dim, not
+-- dictGet — a ClickHouse Cloud dictionary reload is node-local, so a stale
+-- replica can silently serve wrong video_type/category (LEFT so sessions with
+-- an unrecognized content_id still count, just with empty dims).
 DROP VIEW IF EXISTS sonyliv_concurrency.mv_session_intervals;
 CREATE MATERIALIZED VIEW sonyliv_concurrency.mv_session_intervals
 REFRESH EVERY 30 SECOND TO sonyliv_concurrency.session_intervals EMPTY AS
-SELECT video_session_id, interval_idx, active_start, active_end,
-       toUInt8(active_end >= now() - toIntervalSecond(cfg_gap_timeout_seconds())) AS is_provisional,
-       content_id, platform, country,
-       dictGet('sonyliv_concurrency.content_dict','video_type', content_id) AS video_type,
-       dictGet('sonyliv_concurrency.content_dict','category',   content_id) AS category,
+SELECT sess.video_session_id AS video_session_id,
+       sess.intervals AS intervals,
+       -- provisional threshold tied to the same gap timeout (config.sql) used to
+       -- close a stretch, so tuning that one knob keeps this consistent too.
+       toUInt8(sess.last_active_end >= now() - toIntervalSecond(cfg_gap_timeout_seconds())) AS is_provisional,
+       sess.content_id AS content_id, sess.platform AS platform, sess.country AS country,
+       cd.video_type AS video_type, cd.category AS category,
        toUnixTimestamp64Milli(now64(3)) AS version
 FROM
 (
   WITH
   recent AS (
-    SELECT video_session_id FROM sonyliv_concurrency.events_raw
-    GROUP BY video_session_id HAVING max(event_timestamp) >= now() - INTERVAL 20 MINUTE ),
+    SELECT video_session_id FROM sonyliv_concurrency.session_last_seen
+    WHERE last_ts >= now() - INTERVAL 20 MINUTE ),
   per_event AS (
     SELECT video_session_id AS sid, event_timestamp AS ts, content_id, platform, country,
       multiIf(event_type IN ('VideoPlay','AppForegrounded') OR event IN ('resume','speed-resume','AdResume'), 1,
@@ -218,29 +264,44 @@ FROM
     FROM collapsed ),
   segments AS (
     SELECT sid, content_id, platform, country, ts AS seg_start,
-      multiIf(rn=n, addSeconds(ts, cfg_heartbeat_seconds()), dateDiff('second', ts, next_ts) <= cfg_gap_timeout_seconds(), next_ts, addSeconds(ts, cfg_heartbeat_seconds())) AS seg_end
+      -- grace tail + gap timeout come from config.sql (was hardcoded +60s / <=90s);
+      -- already uses dateDiff('second', ...) for an unambiguous unit on the gap test.
+      multiIf(rn=n, addSeconds(ts, cfg_heartbeat_seconds()),
+              dateDiff('second', ts, next_ts) <= cfg_gap_timeout_seconds(), next_ts,
+              addSeconds(ts, cfg_heartbeat_seconds())) AS seg_end
     FROM stated WHERE state_sign = 1 ),
   islands AS (
     SELECT *, if(seg_start > max(seg_end) OVER (PARTITION BY sid ORDER BY seg_start
                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 1, 0) AS new_island
-    FROM segments )
-  SELECT sid AS video_session_id, toUInt16(island_id) AS interval_idx,
-         min(seg_start) AS active_start, max(seg_end) AS active_end,
+    FROM segments ),
+  per_island AS (
+    SELECT sid, island_id, min(seg_start) AS istart, max(seg_end) AS iend,
+           any(content_id) AS content_id, any(platform) AS platform, any(country) AS country
+    FROM (SELECT *, sum(new_island) OVER (PARTITION BY sid ORDER BY seg_start
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS island_id FROM islands)
+    GROUP BY sid, island_id HAVING iend > istart )
+  -- Collapse a session's islands into one array-typed row — see the
+  -- session_intervals table comment: this is what makes a shrunk island
+  -- count (fewer islands than the previous refresh) unable to leave stale
+  -- rows behind under FINAL.
+  SELECT sid AS video_session_id,
+         arraySort(iv -> iv.1, groupArray((istart, iend))) AS intervals,
+         max(iend) AS last_active_end,
          any(content_id) AS content_id, any(platform) AS platform, any(country) AS country
-  FROM (SELECT *, sum(new_island) OVER (PARTITION BY sid ORDER BY seg_start
-             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS island_id FROM islands)
-  GROUP BY sid, island_id HAVING active_end > active_start
-);
+  FROM per_island
+  GROUP BY sid
+) AS sess
+LEFT JOIN sonyliv_concurrency.content_dim FINAL AS cd USING (content_id);
 
 -- D3. session_intervals → concurrency_hot_abs (recent minutes, absolute). 30s REPLACE.
 DROP VIEW IF EXISTS sonyliv_concurrency.concurrency_hot_abs_mv;
 CREATE MATERIALIZED VIEW sonyliv_concurrency.concurrency_hot_abs_mv
 REFRESH EVERY 30 SECOND DEPENDS ON sonyliv_concurrency.mv_session_intervals
 TO sonyliv_concurrency.concurrency_hot_abs EMPTY AS
--- Perf fix: filter to the hot window BEFORE the ARRAY JOIN expansion, not after.
--- A row with active_end before the window can never produce a minute inside it,
--- so this is provably equivalent to the old filter — just avoids expanding
--- (and scanning) session_intervals' entire history every 30s as it grows.
+-- Perf fix: filter to the hot window BEFORE the minute-expansion ARRAY JOIN, not
+-- after. An interval whose active_end is before the window can never produce a
+-- minute inside it, so this is provably equivalent to the old filter — just
+-- avoids expanding (and scanning) session_intervals' entire history every 30s.
 SELECT country, platform, video_type, category, minute, content_id,
        toUInt32(uniqExact(video_session_id)) AS concurrent
 FROM (
@@ -248,40 +309,62 @@ FROM (
          -- configurable bucket (config.sql): start-of-bucket + N buckets
          toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds()))
            + toIntervalSecond(number * cfg_bucket_seconds()) AS minute
-  FROM sonyliv_concurrency.session_intervals FINAL
+  FROM
+  (
+    -- unpack session_intervals' one-row-per-session Array(Tuple(...)) first
+    -- (ghost-interval fix, review #7) — session_intervals FINAL no longer has
+    -- active_start/active_end as plain columns.
+    SELECT video_session_id, country, platform, video_type, category, content_id,
+           iv.1 AS active_start, iv.2 AS active_end
+    FROM sonyliv_concurrency.session_intervals FINAL
+    ARRAY JOIN intervals AS iv
+    WHERE iv.2 > iv.1
+      AND iv.2 >= toStartOfInterval(now(), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE   -- prune BEFORE expanding
+  )
   ARRAY JOIN range(0, toUInt64(dateDiff('second',
                  toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds())),
                  toStartOfInterval(active_end - INTERVAL 1 MILLISECOND, toIntervalSecond(cfg_bucket_seconds())))
                  / cfg_bucket_seconds()) + 1) AS number
-  WHERE active_end > active_start
 )
 WHERE minute > toStartOfInterval(now(), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE
 GROUP BY country, platform, video_type, category, minute, content_id;
 
--- D4. COLD compaction — schedule this INSERT every ~1 min (app/cron), NOT a
--- view (it must run AFTER D2/D3 each cycle so session_intervals is current).
--- Same pre-ARRAY-JOIN pruning as D3. concurrency_cold_abs is ReplacingMergeTree
--- so a retried/overlapping run can't double-count; forward-fill guard also
--- keeps it idempotent and append-only (never touches already-frozen minutes).
---
--- INSERT INTO sonyliv_concurrency.concurrency_cold_abs
--- SELECT country, platform, video_type, category, minute, content_id,
---        toUInt32(uniqExact(video_session_id)) AS concurrent
--- FROM (
---   SELECT video_session_id, country, platform, video_type, category, content_id,
---          toStartOfMinute(active_start) + INTERVAL number MINUTE AS minute
---   FROM (
---     SELECT video_session_id, country, platform, video_type, category, content_id, active_start, active_end
---     FROM sonyliv_concurrency.session_intervals FINAL
---     WHERE active_end > active_start
---       AND active_end <= toStartOfMinute(now()) - INTERVAL 10 MINUTE          -- only fully-aged intervals
---   )
---   ARRAY JOIN range(0, toUInt64(dateDiff('minute',
---                  toStartOfMinute(active_start),
---                  toStartOfMinute(active_end - INTERVAL 1 MILLISECOND)) + 1)) AS number
--- )
--- WHERE minute <= toStartOfMinute(now()) - INTERVAL 10 MINUTE
---   AND minute >  (SELECT max(minute) FROM sonyliv_concurrency.concurrency_cold_abs)  -- forward-fill only
--- GROUP BY country, platform, video_type, category, minute, content_id;
+-- D4. COLD compaction — now a real scheduled job (previously a commented-out
+-- INSERT block wired up nowhere, meaning a pure-live deployment never
+-- populated cold_abs and concurrency_now silently served only the hot tier's
+-- last 10 minutes). DEPENDS ON D3 so it runs after session_intervals/hot_abs
+-- are current for this cycle. Same pre-ARRAY-JOIN pruning as D3.
+-- concurrency_cold_abs is ReplacingMergeTree so a retried/overlapping run
+-- can't double-count; the forward-fill guard keeps it idempotent and
+-- append-only (never touches already-frozen minutes), coalesced against an
+-- empty cold_abs on the very first run.
+DROP VIEW IF EXISTS sonyliv_concurrency.mv_cold_compaction;
+CREATE MATERIALIZED VIEW sonyliv_concurrency.mv_cold_compaction
+REFRESH EVERY 1 MINUTE DEPENDS ON sonyliv_concurrency.concurrency_hot_abs_mv
+TO sonyliv_concurrency.concurrency_cold_abs EMPTY AS
+-- Bucket-aware to match D3 (config.sql cfg_bucket_seconds()) — hot and cold
+-- must bucket identically or concurrency_now's cold/hot union misaligns.
+SELECT country, platform, video_type, category, minute, content_id,
+       toUInt32(uniqExact(video_session_id)) AS concurrent
+FROM (
+  SELECT video_session_id, country, platform, video_type, category, content_id,
+         toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds()))
+           + toIntervalSecond(number * cfg_bucket_seconds()) AS minute
+  FROM (
+    SELECT video_session_id, country, platform, video_type, category, content_id,
+           iv.1 AS active_start, iv.2 AS active_end
+    FROM sonyliv_concurrency.session_intervals FINAL
+    ARRAY JOIN intervals AS iv
+    WHERE iv.2 > iv.1
+      AND iv.2 <= toStartOfInterval(now(), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE          -- only fully-aged intervals
+  )
+  ARRAY JOIN range(0, toUInt64(dateDiff('second',
+                 toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds())),
+                 toStartOfInterval(active_end - INTERVAL 1 MILLISECOND, toIntervalSecond(cfg_bucket_seconds())))
+                 / cfg_bucket_seconds()) + 1) AS number
+)
+WHERE minute <= toStartOfInterval(now(), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE
+  AND minute >  coalesce((SELECT max(minute) FROM sonyliv_concurrency.concurrency_cold_abs), toDateTime(0))  -- forward-fill only
+GROUP BY country, platform, video_type, category, minute, content_id;
 
 SHOW TABLES FROM sonyliv_concurrency;

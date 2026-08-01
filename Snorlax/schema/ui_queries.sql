@@ -5,15 +5,36 @@
 --   from/to '' -> full data range · dim filters '' -> all · content_id '' -> all
 -- Pass every param (missing = error). Run one query at a time via --query,
 -- or the whole file with --queries-file (same params applied to each).
+--
+-- STANDARD FILTER BLOCK — every query below that reads concurrency_now (or
+-- events_raw joined to content_dim) applies this identical 5-dim predicate,
+-- so KPI tiles / breakdowns always match the filtered chart:
+--   AND (platform   = {platform:String}    OR {platform:String}    = '')
+--   AND (country    = {country:String}     OR {country:String}     = '')
+--   AND (video_type = {video_type:String}  OR {video_type:String}  = '')
+--   AND (category   = {category:String}    OR {category:String}   = '')
+--   AND (content_id = toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
+-- Note content_id uses toInt64OrZero (not toUInt64OrZero) — the catalog has a
+-- negative sentinel content_id, and an unsigned parse would silently zero it.
+--
+-- KNOWN CAVEAT: summing `concurrent` across dim-combos for an UNFILTERED
+-- global total (queries 1/2 with no filters set) double-counts the ~0.9% of
+-- sessions that span more than one platform. Accepted/documented tradeoff,
+-- not a bug — filtered queries are exact.
 -- #####################################################################
 
 -- =====================================================================
 -- 0) FILTER DROPDOWNS + time bounds (no params)
 -- =====================================================================
-SELECT DISTINCT platform   FROM sonyliv_concurrency.concurrency_now ORDER BY platform;
-SELECT DISTINCT country    FROM sonyliv_concurrency.concurrency_now ORDER BY country;
-SELECT DISTINCT video_type FROM sonyliv_concurrency.concurrency_now ORDER BY video_type;
-SELECT DISTINCT category   FROM sonyliv_concurrency.concurrency_now ORDER BY category;
+-- platform/country come from the tiny dim_values table (fed incrementally off
+-- events_raw), not concurrency_now — populating a dropdown shouldn't force a
+-- cold FINAL + hot union scan.
+-- DISTINCT guards against transient ReplacingMergeTree duplicates pre-merge
+-- (cheap here — dim_values is tiny; not worth a FINAL).
+SELECT DISTINCT value AS platform FROM sonyliv_concurrency.dim_values WHERE dim = 'platform' ORDER BY platform;
+SELECT DISTINCT value AS country  FROM sonyliv_concurrency.dim_values WHERE dim = 'country'  ORDER BY country;
+SELECT DISTINCT video_type FROM sonyliv_concurrency.content_dim ORDER BY video_type;
+SELECT DISTINCT category   FROM sonyliv_concurrency.content_dim ORDER BY category;
 SELECT content_id, title FROM sonyliv_concurrency.content_dim ORDER BY title LIMIT 1000;
 SELECT min(minute) AS min_ts, max(minute) AS max_ts FROM sonyliv_concurrency.concurrency_now;
 
@@ -30,8 +51,14 @@ WHERE minute BETWEEN from_ts AND to_ts
   AND (country   = {country:String}     OR {country:String}    = '')
   AND (video_type= {video_type:String}  OR {video_type:String} = '')
   AND (category  = {category:String}    OR {category:String}   = '')
-  AND (content_id= toUInt64OrZero({content_id:String}) OR toUInt64OrZero({content_id:String}) = 0)
-GROUP BY minute ORDER BY minute;
+  AND (content_id= toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
+GROUP BY minute
+-- Fill from the query's resolved range bound, not the filtered slice's first
+-- present row — so a filter that starts mid-range still renders true zero
+-- minutes at the front instead of a misleading gap. Step is the configurable
+-- bucket width (config.sql), not a hardcoded minute — must match how `minute`
+-- rows are actually spaced or FILL inserts phantom sub-bucket rows.
+ORDER BY minute WITH FILL FROM from_ts TO to_ts + toIntervalSecond(cfg_bucket_seconds()) STEP toIntervalSecond(cfg_bucket_seconds());
 
 -- =====================================================================
 -- 2) KPI TILES — peak / avg / current concurrency (avg over full range)
@@ -43,7 +70,11 @@ WITH
     SELECT minute, sum(concurrent) AS c
     FROM sonyliv_concurrency.concurrency_now
     WHERE minute BETWEEN from_ts AND to_ts
-      AND (platform = {platform:String} OR {platform:String} = '')
+      AND (platform  = {platform:String}   OR {platform:String}   = '')
+      AND (country   = {country:String}    OR {country:String}    = '')
+      AND (video_type= {video_type:String} OR {video_type:String} = '')
+      AND (category  = {category:String}   OR {category:String}  = '')
+      AND (content_id= toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
     GROUP BY minute
   )
 SELECT max(c) AS peak_concurrency, argMax(minute, c) AS peak_minute,
@@ -55,15 +86,22 @@ SELECT max(c) AS peak_concurrency, argMax(minute, c) AS peak_minute,
 FROM curve;
 
 -- KPI tiles — sessions started / ended (from events_raw, dup-safe) ----------
+-- events_raw doesn't carry video_type/category directly (those are content-level
+-- dims) — LEFT JOIN content_dim so the standard filter block still applies.
 WITH
   coalesce(parseDateTimeBestEffortOrNull({from:String},'UTC'), (SELECT min(event_timestamp) FROM sonyliv_concurrency.events_raw)) AS from_ts,
   coalesce(parseDateTimeBestEffortOrNull({to:String},'UTC'),   (SELECT max(event_timestamp) FROM sonyliv_concurrency.events_raw)) AS to_ts
 SELECT
-  uniqExactIf(video_session_id, event_type = 'VideoSessionStart') AS sessions_started,
-  uniqExactIf(video_session_id, event_type = 'VideoSessionEnd')   AS sessions_ended
-FROM sonyliv_concurrency.events_raw
-WHERE event_timestamp BETWEEN from_ts AND to_ts
-  AND (platform = {platform:String} OR {platform:String} = '');
+  uniqExactIf(e.video_session_id, e.event_type = 'VideoSessionStart') AS sessions_started,
+  uniqExactIf(e.video_session_id, e.event_type = 'VideoSessionEnd')   AS sessions_ended
+FROM sonyliv_concurrency.events_raw AS e
+LEFT JOIN sonyliv_concurrency.content_dim FINAL AS cd USING (content_id)
+WHERE e.event_timestamp BETWEEN from_ts AND to_ts
+  AND (e.platform  = {platform:String}    OR {platform:String}    = '')
+  AND (e.country   = {country:String}     OR {country:String}     = '')
+  AND (cd.video_type = {video_type:String} OR {video_type:String} = '')
+  AND (cd.category   = {category:String}   OR {category:String}  = '')
+  AND (e.content_id = toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0);
 
 -- new users in the range (users whose FIRST-EVER event falls in the window)
 WITH
@@ -84,10 +122,15 @@ SELECT minute,
        uniqExactIf(video_session_id, event_type='VideoSessionStart') AS sessions_started,
        uniqExactIf(video_session_id, event_type='VideoSessionEnd')   AS sessions_ended
 FROM (
-  SELECT toStartOfInterval(event_timestamp, toIntervalSecond(cfg_bucket_seconds())) AS minute, video_session_id, event_type
-  FROM sonyliv_concurrency.events_raw
-  WHERE event_timestamp BETWEEN from_ts AND to_ts
-    AND (platform = {platform:String} OR {platform:String} = '')
+  SELECT toStartOfInterval(e.event_timestamp, toIntervalSecond(cfg_bucket_seconds())) AS minute, e.video_session_id, e.event_type
+  FROM sonyliv_concurrency.events_raw AS e
+  LEFT JOIN sonyliv_concurrency.content_dim FINAL AS cd USING (content_id)
+  WHERE e.event_timestamp BETWEEN from_ts AND to_ts
+    AND (e.platform  = {platform:String}    OR {platform:String}    = '')
+    AND (e.country   = {country:String}     OR {country:String}     = '')
+    AND (cd.video_type = {video_type:String} OR {video_type:String} = '')
+    AND (cd.category   = {category:String}   OR {category:String}  = '')
+    AND (e.content_id = toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
 )
 GROUP BY minute ORDER BY minute;
 
@@ -102,11 +145,16 @@ FROM (
   SELECT platform, minute, sum(concurrent) AS c
   FROM sonyliv_concurrency.concurrency_now
   WHERE minute BETWEEN from_ts AND to_ts
+    AND (country   = {country:String}    OR {country:String}    = '')
+    AND (video_type= {video_type:String} OR {video_type:String} = '')
+    AND (category  = {category:String}   OR {category:String}  = '')
+    AND (content_id= toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
   GROUP BY platform, minute
 )
 GROUP BY platform ORDER BY peak DESC;
 
--- Top content by peak concurrency (title via dictionary)
+-- Top content by peak concurrency (title via dictionary — display-only, not a
+-- correctness-critical read, so the dictionary's Cloud staleness risk is fine here)
 WITH
   coalesce(parseDateTimeBestEffortOrNull({from:String},'UTC'), (SELECT min(minute) FROM sonyliv_concurrency.concurrency_now)) AS from_ts,
   coalesce(parseDateTimeBestEffortOrNull({to:String},'UTC'),   (SELECT max(minute) FROM sonyliv_concurrency.concurrency_now)) AS to_ts
@@ -117,6 +165,10 @@ FROM (
   SELECT content_id, minute, sum(concurrent) AS c
   FROM sonyliv_concurrency.concurrency_now
   WHERE minute BETWEEN from_ts AND to_ts
+    AND (platform  = {platform:String}   OR {platform:String}   = '')
+    AND (country   = {country:String}    OR {country:String}    = '')
+    AND (video_type= {video_type:String} OR {video_type:String} = '')
+    AND (category  = {category:String}   OR {category:String}  = '')
   GROUP BY content_id, minute
 )
 GROUP BY content_id ORDER BY peak DESC LIMIT 20;
@@ -131,7 +183,17 @@ WITH
     SELECT minute, sum(concurrent) AS c
     FROM sonyliv_concurrency.concurrency_now
     WHERE minute BETWEEN from_ts AND to_ts
+      AND (platform  = {platform:String}   OR {platform:String}   = '')
+      AND (country   = {country:String}    OR {country:String}    = '')
+      AND (video_type= {video_type:String} OR {video_type:String} = '')
+      AND (category  = {category:String}   OR {category:String}  = '')
+      AND (content_id= toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
     GROUP BY minute
+    -- Densify zero-activity minutes BEFORE averaging — without this, minutes
+    -- absent from `curve` are silently skipped and avg(c) over-reports (the
+    -- same bug Phoenix shipped). max(c) was already fill-safe; only avg was wrong.
+    -- Step = configurable bucket width (config.sql), matching how rows are spaced.
+    ORDER BY minute WITH FILL FROM from_ts TO to_ts + toIntervalSecond(cfg_bucket_seconds()) STEP toIntervalSecond(cfg_bucket_seconds())
   )
 SELECT toStartOfHour(minute) AS hour,        -- toStartOfDay for day grain
        max(c) AS peak_concurrency, round(avg(c),1) AS avg_concurrency
@@ -169,7 +231,9 @@ WITH
       AND (audio_language    = {audio_language:String}    OR {audio_language:String}    = '')
       AND (subtitle_language = {subtitle_language:String} OR {subtitle_language:String} = '')
       AND (player_version    = {player_version:String}    OR {player_version:String}    = '')
-      AND (content_id = toUInt64OrZero({content_id:String}) OR toUInt64OrZero({content_id:String}) = 0)
+      -- toInt64OrZero (not toUInt64OrZero) — content_id is Int64, catalog has a
+      -- negative sentinel that an unsigned parse would silently zero (review #1).
+      AND (content_id = toInt64OrZero({content_id:String}) OR toInt64OrZero({content_id:String}) = 0)
     GROUP BY minute
   )
 SELECT max(c) AS peak_concurrency, argMax(minute, c) AS peak_minute,

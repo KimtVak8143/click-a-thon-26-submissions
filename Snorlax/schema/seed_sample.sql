@@ -43,9 +43,9 @@ SYSTEM RELOAD DICTIONARY sonyliv_concurrency.content_dict;
 
 -- verify the mapping/dictionary resolves
 SELECT 100 AS content_id,
-       dictGet('sonyliv_concurrency.content_dict','title',      toUInt64(100)) AS title,
-       dictGet('sonyliv_concurrency.content_dict','video_type', toUInt64(100)) AS video_type,
-       dictGet('sonyliv_concurrency.content_dict','category',   toUInt64(100)) AS category;
+       dictGet('sonyliv_concurrency.content_dict','title',      toInt64(100)) AS title,
+       dictGet('sonyliv_concurrency.content_dict','video_type', toInt64(100)) AS video_type,
+       dictGet('sonyliv_concurrency.content_dict','category',   toInt64(100)) AS category;
 
 -- 2) SAMPLE EVENTS (last ~8 min, so the live MVs pick them up) ------------------
 -- Session A: content 100, plays throughout, still open (no end)

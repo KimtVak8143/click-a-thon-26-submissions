@@ -16,7 +16,7 @@ SYSTEM RELOAD DICTIONARY sonyliv_concurrency.content_dict;
 -- events: land in a temp table (ms epochs), then convert into events_raw
 CREATE TEMPORARY TABLE _stg
 (
-    content_id UInt64, video_session_id String, user_id String,
+    content_id Int64, video_session_id String, user_id String,
     event_type LowCardinality(String), event LowCardinality(String), event_timestamp UInt64,
     platform LowCardinality(String), app_version LowCardinality(String), country LowCardinality(String),
     audio_language LowCardinality(String), subtitle_language LowCardinality(String),

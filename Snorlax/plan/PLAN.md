@@ -38,16 +38,19 @@ Both tiers store **absolute concurrency per `(dims, minute)`** (instantaneous co
 - **Watermark width = the one knob:** size to p99 heartbeat lag via ClickStack. Wide hot = correctness under late data; narrow hot = faster reads.
 - **Scale caveat (honest):** the absolute *build* expands intervals → minutes (a per-session-minute **intermediate** before the `uniqExact` group-by). The stored output is compact (minutes × dim-combos, independent of session count), but that intermediate is bounded by total active session-minutes. Fine at sample size and for the small hot window; for extreme scale (multi-hour sessions at 100×) switch the **cold build** to delta→cumsum-per-combo (2 rows/run → cumsum over a dense per-combo minute axis), which avoids per-session expansion. Query side is unchanged.
 
-## 5. Tables & views (lean — 5 tables + 1 dict + 1 view + 1 Null landing)
+## 5. Tables & views (7 tables + 1 dict + 1 view + 1 Null landing)
+*(Updated post-review — see §13. `session_intervals` is now one row per session; two small tables added for cheap recency/dropdown lookups; `content_dim` is now a plain JOIN on the correctness-critical path, dictionary kept only for display.)*
 | Object | Engine | Role |
 |---|---|---|
 | `events_incoming` | MergeTree (+2d TTL) | **ClickPipes landing** from Redpanda (JSON, ms epochs); `mv_incoming_to_raw` casts → `events_raw` |
-| `events_raw` | MergeTree, `ORDER BY (session, ts)` | **canonical typed events**; fed by streaming MV [07] + batch load [02]; dup-tolerant (state machine collapses per (session,ms) & ignores repeats) |
-| `content_dim` + `content_dict` | ReplacingMergeTree + **Dictionary** | metadata enrichment via `dictGet` |
-| `session_intervals` | ReplacingMergeTree(version) | truly-active intervals from the §3 state machine |
-| `concurrency_cold_abs` | MergeTree, `ORDER BY (country,platform,video_type,category,minute,content_id)` | COLD: absolute `concurrent` per `(dims, minute)`, `minute ≤ watermark` |
+| `events_raw` | MergeTree, `ORDER BY (session, ts)` | **canonical typed events**; fed by streaming MV [07] + batch load [02]; dup-tolerant (state machine collapses per (session,ms) & ignores repeats); `content_id` is `Int64` (catalog has a negative sentinel) |
+| `content_dim` + `content_dict` | ReplacingMergeTree + **Dictionary** | metadata enrichment; state machine (D2) and backfill use a **LEFT JOIN content_dim FINAL**, not `dictGet` — a Cloud dictionary reload is node-local, so a stale replica can silently serve wrong `video_type`/`category`. The dictionary is kept only for the UI's display-only title lookup, where staleness doesn't affect correctness |
+| `session_intervals` | ReplacingMergeTree(version), `ORDER BY video_session_id` | truly-active intervals from the §3 state machine — **one row per session**, holding all current islands as `Array(Tuple(active_start, active_end))`. A refresh that re-derives fewer islands than before ships a shorter array; keying on `video_session_id` alone means the whole prior row is superseded, so stale islands can't survive under `FINAL` (the old per-`interval_idx`-row key could leak ghost rows) |
+| `session_last_seen` | AggregatingMergeTree | one row per session (`last_ts`), fed incrementally off `events_raw`; lets D2's "which sessions are recent" check read a tiny table instead of full-scanning `events_raw` every 30s |
+| `dim_values` | ReplacingMergeTree | tiny `(dim, value)` table fed off `events_raw`, so populating UI filter dropdowns doesn't force a cold `FINAL` + hot union scan of `concurrency_now` |
+| `concurrency_cold_abs` | MergeTree, `ORDER BY (country,platform,video_type,category,minute,content_id)` | COLD: absolute `concurrent` per `(dims, minute)`, `minute ≤ watermark`; `content_id` is `Int64` |
 | `concurrency_hot_abs` | MergeTree, same ORDER BY | HOT: absolute per `(dims, minute)`, `minute > watermark`; 30s REPLACE-recompute |
-| `concurrency_now` | VIEW | `cold_abs` ∪ (`hot_abs` WHERE `minute > max(cold minute)`) |
+| `concurrency_now` | VIEW | `cold_abs` ∪ (`hot_abs` WHERE `minute > coalesce(max(cold minute), toDateTime(0))`) — coalesced so an empty cold tier (pure-live deployment) doesn't silently hide every hot row |
 
 **Removed as unnecessary:** `events_stg` (batch uses a TEMPORARY staging table), `kpi_minute` + `user_first_seen` (**KPIs computed at query time** from `events_raw` with `uniqExact` — dup-safe, nothing to keep in sync).
 
@@ -58,18 +61,19 @@ Both tiers store **absolute concurrency per `(dims, minute)`** (instantaneous co
 |---|---|
 | `PLAN.md` | the single design/requirements doc (this file) |
 | **`sql/config.sql`** | **tunable knobs (SQL UDFs): bucket width, heartbeat/gap buffer, dim normalization**. Run FIRST; re-run after any change. |
-| **`sql/schema.sql`** | **tables + dictionary + `concurrency_now` view + all MVs** (ingestion, live derivation, hot) + `concurrency_ext_abs` DDL. Run once. |
-| **`sql/ui_queries.sql`** | **dashboard / insight queries** (filter→sum→max/avg; lenient string params) |
+| **`sql/schema.sql`** | **tables + dictionary + `concurrency_now` view + all MVs** (ingestion, live derivation, hot, **and cold compaction — now a real `REFRESH EVERY` MV, not a manual step**) + `concurrency_ext_abs` DDL. Run once. |
+| **`sql/ui_queries.sql`** | **dashboard / insight queries** (filter→sum→max/avg; lenient string params; identical 5-dim filter block on every query; `WITH FILL` densification; extended drill-down query reads `concurrency_ext_abs`) |
 | `sql/seed_sample.sql` | placeholder data (mapping table + dictionary + sample sessions) to smoke-test |
 | `sql/load_sample_csv.sql` | *(optional)* batch-load the provided CSVs → `events_raw` |
 | `sql/backfill_history.sql` | *(optional)* one-shot build of cold/hot from static data |
-| `sql/verify.sql` | *(optional)* serving == brute force; pause-correctness; disjoint tiers |
+| `sql/verify.sql` | serving == brute force; **independent raw→intervals oracle (structurally different derivation, catches state-machine bugs the brute-force check can't)**; pause-correctness; disjoint tiers; VideoSessionStart lead-in diagnostic — all bucket/knob-aware (`config.sql`) |
+| `sql/tuning_variants.sql` | **offline knob-sweep** for the foreground-resume/grace/gap coin-flips — run once real benchmark answers exist, don't hardcode a guess |
 | **`sql/approach_session_aware.sql`** | session-aware comparable table `concurrency_sa_abs` (from `session_intervals`) |
 | **`sql/approach_session_independent.sql`** | session-independent table `concurrency_si_abs` (per-event state, no interval reconstruction) |
 | **`sql/approach_extended_dims.sql`** | **extended drill-down table `concurrency_ext_abs`** (core + app/player/audio/subtitle dims); rolls up to core |
 | **`sql/compare_approaches.sql`** | asserts session-aware == session-independent == `concurrency_now` (0 mismatches) |
 
-**Live:** `schema.sql` → point ClickPipes (Redpanda→`events_incoming`) + start producer (MVs auto-populate) → schedule cold-compaction (comment in `schema.sql` D4) → `ui_queries.sql`. **Smoke test:** `schema.sql` → `seed_sample.sql` → `ui_queries.sql`. **Offline w/ CSVs:** `schema.sql` → `load_sample_csv.sql` → `backfill_history.sql` → `verify.sql`.
+**Live:** `schema.sql` → point ClickPipes (Redpanda→`events_incoming`) + start producer (MVs auto-populate, including cold compaction) → `ui_queries.sql`. **Smoke test:** `schema.sql` → `seed_sample.sql` → `ui_queries.sql`. **Offline w/ CSVs:** `schema.sql` → `load_sample_csv.sql` → `backfill_history.sql` → `verify.sql`.
 
 ## 7. 24-hour scope
 - **Must:** model + hot/cold serving + correctness (vs brute force) + unseen-day runbook.
@@ -77,8 +81,8 @@ Both tiers store **absolute concurrency per `(dims, minute)`** (instantaneous co
 - **Stretch:** LibreChat+MCP chat, Langfuse, drill-down / engagement / QoE panes, incident RCA, capacity.
 - **Guardrail:** if core isn't validated by ~h12, cut all stretch; a correct, fast, evidenced core wins.
 
-## 8. Verification (`sql/05_verification.sql`)
-Brute-force reference (per-minute explosion counting distinct sessions, incl. pause+resume-in-a-minute) must equal `concurrency_now` totals per minute — **expect 0 mismatches**. Also compare vs the naive "heartbeat-in-minute" rule to quantify the paused-time overcount we avoid. Prove latency + `read_rows` via `system.query_log`. Test late-heartbeat/open-session update (live path). Produce unseen-day answers + query-log evidence.
+## 8. Verification (`sql/verify.sql`)
+Brute-force reference (per-minute explosion counting distinct sessions, incl. pause+resume-in-a-minute) must equal `concurrency_now` totals per minute — **expect 0 mismatches**. This only checks the expand+aggregate step, though — it shares `session_intervals` as input with serving, so it can't catch a bug in the state machine itself. **Post-review fix:** added an independent oracle that re-derives active intervals straight from `events_raw` using a structurally different technique (arrays + `arrayFill` + index-lookahead, not the production pipeline's window functions), diffed against serving via `ANTI JOIN` at (session, minute) grain — the same bar Nirad's independent Python oracle hit (N/N identical). Also compare vs the naive "heartbeat-in-minute" rule to quantify the paused-time overcount we avoid, and run the `VideoSessionStart` lead-in check before deciding whether it should be a +1 start. Prove latency + `read_rows` via `system.query_log`. Test late-heartbeat/open-session update (live path). Produce unseen-day answers + query-log evidence.
 
 ## 9. Open knobs & guardrails
 **Live-traffic tuning (see `schema.sql` header):** `events_incoming = Null` (no landing) · large ClickPipes batches + async inserts · `events_raw` monthly-partitioned + 30d TTL · **bounded windows** (derivation 20 min, hot 10 min, freeze 10 min — recompute ∝ window × active sessions, tighten to p99 lag) · cold append-only forward-fill (finalized minutes never recomputed) · `cold_abs` = ReplacingMergeTree (retry-safe) read `FINAL` · scale-out by sharding on `video_session_id`, size to peak concurrency not event volume.
@@ -126,5 +130,66 @@ Freeze two contracts at hour 0 (run `01_tables.sql`) so all tracks parallelize: 
 **Timeline:** h0–2 contracts+scaffolds · h2–8 build in parallel · h8–12 **verification green** + compaction + real-data dashboard · h12–18 tune + stretch · h18–22 **dry-run unseen-day runbook** · h22–24 write-up + demo.
 **Unseen-day drill:** B points the CSV-reader service at the sealed file → it streams through Redpanda → ClickPipes → `events_raw`; live serving updates itself → A runs the benchmark on the live serving layer + captures answers/latency/`query_log` evidence → C shows the dashboard filling in real time, D shows ClickStack confirming ingest lag held.
 **Guardrail:** if A isn't verified by ~h12, cut all stretch; A+B focus on the unseen-day runbook.
+
+---
+
+## 13. Competitive-review hardening pass (applied)
+
+`review/COMPETITIVE_REVIEW.md` audited this plan + `sql/*.sql` against the other three
+SonyLIV-concurrency submissions and found our serving architecture strongest of the
+four, but our correctness *evidence* weakest — the axis judging weights hardest ("no
+pipeline evidence, no credit"). The following P0/P1 fixes from that review are now
+implemented in `sql/*.sql` (schema/views/strategy only — pipeline execution, ClickStack,
+dashboard UI, and the sealed-run harness are separate, still-open workstreams, not
+covered by this pass):
+
+**Fixed:**
+- `content_id` changed `UInt64` → `Int64` everywhere — the catalog's negative sentinel
+  (`-987654322`) would otherwise abort the load or wrap into a garbage huge number,
+  silently breaking joins/filters on that content.
+- `session_intervals` restructured from one-row-per-interval to **one row per session**
+  (`Array(Tuple(active_start, active_end))`, `ORDER BY video_session_id`) — closes a
+  ghost-interval risk where a session re-deriving fewer islands than a previous refresh
+  left stale high-`interval_idx` rows behind under `FINAL`.
+- Content enrichment moved from `dictGet` to a **LEFT JOIN content_dim FINAL** on the
+  state-machine path (D2 + backfill) — a ClickHouse Cloud dictionary reload is
+  node-local, so a stale replica could silently serve wrong `video_type`/`category`.
+  Dictionary kept only for the UI's display-only title lookup.
+- Hour/day average bug fixed: `ui_queries.sql` query 5 now densifies zero-activity
+  minutes with `WITH FILL` before averaging — previously, minutes absent from the data
+  were skipped instead of counted as zero, biasing the average high.
+- `(next_ts - ts) <= 90` (ambiguous unit on `DateTime64` subtraction) replaced with
+  `dateDiff('second', ts, next_ts) <= 90` in the gap test.
+- `concurrency_now` view now coalesces `max(minute) FROM concurrency_cold_abs` against
+  `toDateTime(0)` — an empty cold tier (pure-live deployment, nothing compacted yet)
+  previously turned into `minute > NULL`, silently hiding every hot row.
+- Cold compaction (D4) converted from a commented-out manual INSERT into a real
+  `REFRESH EVERY 1 MINUTE` materialized view, `DEPENDS ON` the hot MV — previously
+  nothing populated `concurrency_cold_abs` in pure-live mode.
+- Added `session_last_seen` (tiny incremental table) so D2's "which sessions are
+  recent" check no longer full-scans `events_raw` every 30s — recompute cost is now
+  O(active sessions), matching this doc's original claim rather than O(history).
+- Added `dim_values` (tiny incremental table) so UI filter dropdowns read a small table
+  instead of forcing a cold `FINAL` + hot union scan of `concurrency_now`.
+- `ui_queries.sql`: the same 5-dim filter block now applies to every query (previously
+  the KPI/breakdown queries filtered on platform only, or nothing, while the curve
+  filtered all five — so KPI tiles could disagree with the filtered chart); content_id
+  param parsing switched `toUInt64OrZero` → `toInt64OrZero` (same negative-sentinel bug,
+  UI-side).
+- `verify.sql`: added the independent raw→intervals oracle described in §8, plus a
+  `VideoSessionStart` lead-in diagnostic and a documented cross-combo double-count note.
+
+**Shipped as tooling, not silently changed (need real data to resolve):**
+- `sql/tuning_variants.sql` — parameterized sweep for the foreground-resume / grace /
+  gap knobs (§9's "one knob" and the AppForegrounded reactivation question). Run once
+  benchmark answers exist; don't hand-pin a guess into production first.
+- `VideoSessionStart` transition classification (currently neutral in `multiIf`) — the
+  `verify.sql` lead-in check tells you whether it should be a +1 start; not flipped
+  blind.
+
+**Still open (out of scope for this pass — separate workstreams):** actually running
+the Redpanda→ClickPipes pipeline end-to-end on Cloud; ClickStack integration; dashboard
+UI/visuals; the sealed-run harness (checksums + clean git tree + `query_log.tsv`
+packaging).
 
 ---
