@@ -47,7 +47,10 @@ WITH
     GROUP BY minute
   )
 SELECT max(c) AS peak_concurrency, argMax(minute, c) AS peak_minute,
-       round(sum(c) / (dateDiff('minute', from_ts, to_ts) + 1), 1) AS avg_concurrency,
+       -- avg = sum / (#buckets in range), empty buckets counted as 0. Denominator
+       -- is buckets (config.sql), not minutes, so it stays correct if the bucket
+       -- width changes: dateDiff(seconds)/bucket_seconds + 1.
+       round(sum(c) / (dateDiff('second', from_ts, to_ts) / cfg_bucket_seconds() + 1), 1) AS avg_concurrency,
        anyLast(c) AS last_minute_concurrency
 FROM curve;
 
@@ -81,7 +84,7 @@ SELECT minute,
        uniqExactIf(video_session_id, event_type='VideoSessionStart') AS sessions_started,
        uniqExactIf(video_session_id, event_type='VideoSessionEnd')   AS sessions_ended
 FROM (
-  SELECT toStartOfMinute(event_timestamp) AS minute, video_session_id, event_type
+  SELECT toStartOfInterval(event_timestamp, toIntervalSecond(cfg_bucket_seconds())) AS minute, video_session_id, event_type
   FROM sonyliv_concurrency.events_raw
   WHERE event_timestamp BETWEEN from_ts AND to_ts
     AND (platform = {platform:String} OR {platform:String} = '')
@@ -140,5 +143,42 @@ FROM curve GROUP BY hour ORDER BY hour;
 SELECT query_duration_ms, read_rows, formatReadableSize(read_bytes) AS read_bytes
 FROM system.query_log
 WHERE type='QueryFinish'
-  AND hasAny(tables, ['sonyliv_concurrency.concurrency_cold_abs','sonyliv_concurrency.concurrency_hot_abs'])
+  AND hasAny(tables, ['sonyliv_concurrency.concurrency_cold_abs','sonyliv_concurrency.concurrency_hot_abs',
+                      'sonyliv_concurrency.concurrency_ext_abs'])
 ORDER BY event_time DESC LIMIT 5;
+
+-- =====================================================================
+-- 7) EXTENDED DRILL-DOWN — curve + peak/avg filtered on ANY dim, including the
+--    drill-down dims (app_version, audio_language, subtitle_language,
+--    player_version). Reads concurrency_ext_abs (approach_extended_dims.sql),
+--    NOT the lean core tiers. EMPTY '' = "all" for every filter. Language values
+--    are normalized (config.sql), so pass e.g. 'hin' (not 'HIN'/'hin-hindi').
+-- =====================================================================
+WITH
+  coalesce(parseDateTimeBestEffortOrNull({from:String},'UTC'), (SELECT min(minute) FROM sonyliv_concurrency.concurrency_ext_abs)) AS from_ts,
+  coalesce(parseDateTimeBestEffortOrNull({to:String},'UTC'),   (SELECT max(minute) FROM sonyliv_concurrency.concurrency_ext_abs)) AS to_ts,
+  curve AS (
+    SELECT minute, sum(concurrent) AS c
+    FROM sonyliv_concurrency.concurrency_ext_abs
+    WHERE minute BETWEEN from_ts AND to_ts
+      AND (platform          = {platform:String}          OR {platform:String}          = '')
+      AND (country           = {country:String}           OR {country:String}           = '')
+      AND (video_type        = {video_type:String}        OR {video_type:String}        = '')
+      AND (category          = {category:String}          OR {category:String}          = '')
+      AND (app_version       = {app_version:String}       OR {app_version:String}       = '')
+      AND (audio_language    = {audio_language:String}    OR {audio_language:String}    = '')
+      AND (subtitle_language = {subtitle_language:String} OR {subtitle_language:String} = '')
+      AND (player_version    = {player_version:String}    OR {player_version:String}    = '')
+      AND (content_id = toUInt64OrZero({content_id:String}) OR toUInt64OrZero({content_id:String}) = 0)
+    GROUP BY minute
+  )
+SELECT max(c) AS peak_concurrency, argMax(minute, c) AS peak_minute,
+       -- avg over #buckets in range, empty buckets = 0 (bucket width from config.sql)
+       round(sum(c) / (dateDiff('second', from_ts, to_ts) / cfg_bucket_seconds() + 1), 1) AS avg_concurrency
+FROM curve;
+
+-- Distinct drill-down dim values (dropdowns for the extended filters)
+SELECT DISTINCT app_version       FROM sonyliv_concurrency.concurrency_ext_abs ORDER BY app_version;
+SELECT DISTINCT audio_language    FROM sonyliv_concurrency.concurrency_ext_abs ORDER BY audio_language;
+SELECT DISTINCT subtitle_language FROM sonyliv_concurrency.concurrency_ext_abs ORDER BY subtitle_language;
+SELECT DISTINCT player_version    FROM sonyliv_concurrency.concurrency_ext_abs ORDER BY player_version;

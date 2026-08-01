@@ -30,7 +30,10 @@ INSERT INTO sonyliv_concurrency.events_raw
 SELECT video_session_id, user_id, content_id, event_type, event,
        fromUnixTimestamp64Milli(event_timestamp, 'UTC'),
        fromUnixTimestamp64Milli(session_start_epoch, 'UTC'),
-       platform, app_version, country, audio_language, subtitle_language, player_version
+       -- same edge normalization as the live MV (config.sql); column order MUST
+       -- match events_raw (platform, app_version, country, audio, subtitle, player):
+       platform, norm_dim(app_version), country,
+       norm_lang(audio_language), norm_lang(subtitle_language), norm_dim(player_version)
 FROM _stg;
 
 DROP TEMPORARY TABLE _stg;

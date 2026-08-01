@@ -50,9 +50,10 @@ FROM
   ),
   segments AS (
     SELECT sid, content_id, platform, country, ts AS seg_start,
-      multiIf(rn=n, ts + INTERVAL 60 SECOND,
-              (next_ts - ts) <= 90, next_ts,
-              ts + INTERVAL 60 SECOND) AS seg_end
+      -- grace tail + gap timeout now come from config.sql (was +60s / <=90s):
+      multiIf(rn=n, addSeconds(ts, cfg_heartbeat_seconds()),
+              dateDiff('second', ts, next_ts) <= cfg_gap_timeout_seconds(), next_ts,
+              addSeconds(ts, cfg_heartbeat_seconds())) AS seg_end
     FROM stated WHERE state_sign = 1
   ),
   islands AS (
@@ -71,7 +72,7 @@ FROM
 
 -- watermark
 CREATE TEMPORARY TABLE _wm AS
-SELECT toStartOfMinute(max(event_timestamp)) - INTERVAL 10 MINUTE AS wm
+SELECT toStartOfInterval(max(event_timestamp), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE AS wm
 FROM sonyliv_concurrency.events_raw;
 
 -- ---------------------------------------------------------------------
@@ -83,11 +84,14 @@ SELECT country, platform, video_type, category, minute, content_id,
        toUInt32(uniqExact(video_session_id)) AS concurrent
 FROM (
   SELECT video_session_id, country, platform, video_type, category, content_id,
-         toStartOfMinute(active_start) + INTERVAL number MINUTE AS minute
+         -- configurable bucket (config.sql): start-of-bucket + N buckets
+         toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds()))
+           + toIntervalSecond(number * cfg_bucket_seconds()) AS minute
   FROM sonyliv_concurrency.session_intervals FINAL
-  ARRAY JOIN range(0, toUInt64(dateDiff('minute',
-                 toStartOfMinute(active_start),
-                 toStartOfMinute(active_end - INTERVAL 1 MILLISECOND)) + 1)) AS number
+  ARRAY JOIN range(0, toUInt64(dateDiff('second',
+                 toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds())),
+                 toStartOfInterval(active_end - INTERVAL 1 MILLISECOND, toIntervalSecond(cfg_bucket_seconds())))
+                 / cfg_bucket_seconds()) + 1) AS number
   WHERE active_end > active_start
 )
 WHERE minute <= (SELECT wm FROM _wm)
@@ -98,11 +102,14 @@ SELECT country, platform, video_type, category, minute, content_id,
        toUInt32(uniqExact(video_session_id)) AS concurrent
 FROM (
   SELECT video_session_id, country, platform, video_type, category, content_id,
-         toStartOfMinute(active_start) + INTERVAL number MINUTE AS minute
+         -- configurable bucket (config.sql): start-of-bucket + N buckets
+         toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds()))
+           + toIntervalSecond(number * cfg_bucket_seconds()) AS minute
   FROM sonyliv_concurrency.session_intervals FINAL
-  ARRAY JOIN range(0, toUInt64(dateDiff('minute',
-                 toStartOfMinute(active_start),
-                 toStartOfMinute(active_end - INTERVAL 1 MILLISECOND)) + 1)) AS number
+  ARRAY JOIN range(0, toUInt64(dateDiff('second',
+                 toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds())),
+                 toStartOfInterval(active_end - INTERVAL 1 MILLISECOND, toIntervalSecond(cfg_bucket_seconds())))
+                 / cfg_bucket_seconds()) + 1) AS number
   WHERE active_end > active_start
 )
 WHERE minute > (SELECT wm FROM _wm)

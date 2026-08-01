@@ -16,11 +16,14 @@ reference AS (
   SELECT minute, uniqExact(video_session_id) AS c
   FROM (
     SELECT video_session_id,
-           toStartOfMinute(active_start) + INTERVAL number MINUTE AS minute
+           -- configurable bucket (config.sql): start-of-bucket + N buckets
+           toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds()))
+             + toIntervalSecond(number * cfg_bucket_seconds()) AS minute
     FROM sonyliv_concurrency.session_intervals FINAL
-    ARRAY JOIN range(0, toUInt64(dateDiff('minute',
-                   toStartOfMinute(active_start),
-                   toStartOfMinute(active_end - INTERVAL 1 MILLISECOND)) + 1)) AS number
+    ARRAY JOIN range(0, toUInt64(dateDiff('second',
+                   toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds())),
+                   toStartOfInterval(active_end - INTERVAL 1 MILLISECOND, toIntervalSecond(cfg_bucket_seconds())))
+                   / cfg_bucket_seconds()) + 1) AS number
     WHERE active_end > active_start
   )
   GROUP BY minute
@@ -34,7 +37,7 @@ ORDER BY minute;                 -- <-- zero rows = correct
 -- B) PER-SESSION DEDUPE probe: sessions with >1 active interval in the
 --    same minute must still count once (handled by uniqExact). List them.
 -- ---------------------------------------------------------------------
-SELECT video_session_id, toStartOfMinute(active_start) AS minute, count() AS intervals_in_minute
+SELECT video_session_id, toStartOfInterval(active_start, toIntervalSecond(cfg_bucket_seconds())) AS minute, count() AS intervals_in_minute
 FROM sonyliv_concurrency.session_intervals FINAL
 GROUP BY video_session_id, minute
 HAVING intervals_in_minute > 1
@@ -51,7 +54,8 @@ ours AS (
   SELECT minute, sum(concurrent) AS c FROM sonyliv_concurrency.concurrency_now GROUP BY minute
 ),
 naive AS (   -- "active iff any heartbeat in the minute" (ignores pause)
-  SELECT toStartOfMinute(event_timestamp) AS minute, uniqExact(video_session_id) AS c
+  SELECT toStartOfInterval(event_timestamp, toIntervalSecond(cfg_bucket_seconds())) AS minute,
+         uniqExact(video_session_id) AS c
   FROM sonyliv_concurrency.events_raw
   WHERE event_type = 'VideoHeartbeat'
   GROUP BY minute
