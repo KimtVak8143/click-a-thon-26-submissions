@@ -7,6 +7,79 @@ canonical analytics-contract models, and provider-neutral Instrumentation Agent 
 generation. It intentionally contains no DDL generation or execution, event ingestion, Context
 Agent, Analytics Agent, or frontend code.
 
+## 🚂 Railway Deployment
+
+**Ready to deploy?** 
+
+- **Production Guide**: [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) - Complete production deployment guide
+- **Railway Specific**: [RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md) - Railway-specific instructions
+
+Quick deploy checklist:
+- ✅ ClickHouse database ready
+- ✅ LLM provider API key
+- ✅ Environment variables configured
+- ✅ Deploy from GitHub repo
+
+## 🐳 Docker Deployment
+
+### Build Docker Image
+
+```bash
+docker build -t context-compiler:latest .
+```
+
+### Run Docker Container Locally
+
+```bash
+# Copy environment file
+cp .env.example .env
+# Edit .env with your configuration
+
+# Run container
+docker run -d \
+  --name context-compiler \
+  --env-file .env \
+  -p 8080:8080 \
+  context-compiler:latest
+```
+
+### Test Container
+
+```bash
+curl http://localhost:8080/
+curl http://localhost:8080/health
+curl http://localhost:8080/docs
+```
+
+## ⚙️ Production Configuration
+
+### Required Environment Variables
+
+For production deployment, configure these variables:
+
+```bash
+# Environment
+CONTEXT_COMPILER_APP_ENV=production
+CONTEXT_COMPILER_LOG_LEVEL=INFO
+
+# CORS - Your frontend URL
+CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS=https://your-frontend.vercel.app
+
+# ClickHouse
+CONTEXT_COMPILER_CLICKHOUSE_HOST=your-host.clickhouse.cloud
+CONTEXT_COMPILER_CLICKHOUSE_PORT=8443
+CONTEXT_COMPILER_CLICKHOUSE_SECURE=true
+CONTEXT_COMPILER_CLICKHOUSE_USERNAME=your-username
+CONTEXT_COMPILER_CLICKHOUSE_PASSWORD=your-password
+
+# LLM Provider
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=your-api-key
+LLM_MODEL=gpt-4o-mini
+```
+
+See `.env.example` for all available configuration options.
+
 ## Requirements
 
 - Python 3.11 or newer
