@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -56,8 +57,9 @@ def _stub_backed_app(
     provider: FakeStructuredGenerationProvider,
     stub_client: StubClient,
     context_repository: InMemoryContextRepository | None = None,
+    settings: Settings | None = None,
 ):
-    settings = Settings(langfuse_enabled=False, _env_file=None)
+    settings = settings or Settings(langfuse_enabled=False, _env_file=None)
     repo = context_repository or _approved_context_repository()
 
     def factory() -> StubClient:
@@ -187,3 +189,65 @@ def test_pipeline_run_blocks_when_no_approved_context_is_present() -> None:
     body = response.json()
     assert body["status"] == "contract_blocked"
     assert any("approved context" in item.lower() for item in body["errors"])
+
+
+def test_pipeline_does_not_publish_a_recommendation_blocked_by_release_gate() -> None:
+    profile = SourceProfiler().profile(EVENTS)
+    provider = FakeStructuredGenerationProvider(
+        [
+            encoded(contract_data(profile)),
+            json.dumps(
+                {
+                    "insights": [
+                        {
+                            "title": "Unsupported lift",
+                            "summary": "Conversion will improve by 99%. Ship it.",
+                            "confidence": 0.9,
+                            "category": "funnel",
+                            "evidence_ids": ["baseline_funnel"],
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    settings = Settings(
+        langfuse_enabled=False,
+        recommendation_evaluator_url="http://127.0.0.1:4319/v1/recommendations/evaluate",
+        _env_file=None,
+    )
+    app = _stub_backed_app(provider, StubClient(), settings=settings)
+
+    class BlockedResponse:
+        status_code = 422
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"status": "BLOCKED_UNSUPPORTED_EVIDENCE"}
+
+    class GatewayClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> GatewayClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def post(self, *_: Any, **__: Any) -> BlockedResponse:
+            return BlockedResponse()
+
+    with patch("app.api.pipeline.httpx.AsyncClient", GatewayClient), TestClient(app) as http:
+        response = http.post(
+            "/pipeline/run",
+            files={
+                "spec": ("feature.md", SPEC.encode(), "text/markdown"),
+                "events": ("events.ndjson", EVENTS.read_bytes(), "application/x-ndjson"),
+            },
+            data={"dry_run": "true"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["insights"] == []
+    assert "recommendation blocked: BLOCKED_UNSUPPORTED_EVIDENCE" in response.json()["errors"]

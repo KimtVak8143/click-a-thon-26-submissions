@@ -1,0 +1,9 @@
+.env
+.vercel
+dist
+node_modules
+librechat-data
+meili-data
+uploads
+logs
+*.tsbuildinfo

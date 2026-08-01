@@ -6,8 +6,6 @@ services:
     container_name: context-compiler-dashboard
     ports:
       - "4173:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   librechat:

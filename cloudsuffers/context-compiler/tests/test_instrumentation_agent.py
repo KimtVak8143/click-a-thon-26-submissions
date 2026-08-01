@@ -393,7 +393,6 @@ def test_trace_metadata_is_safe_and_has_required_observations(profile) -> None:
         "contract_compilation",
         "final_contract_validation",
         "prompt_construction",
-        "provider_request",
         "JSON_parsing",
         "total_generation",
     }

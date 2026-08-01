@@ -129,7 +129,9 @@ class InstrumentationAgent:
         with active_tracer.observe(
             "total_generation",
             as_type="span",
+            input={"feature_slug": feature_slug, "run_id": str(active_run_id)},
             metadata={**base_metadata, **timing_metadata(**initial_timing)},
+            tags=["contract-generation"],
         ) as total_observation:
             try:
                 async with asyncio.timeout(self._total_timeout_seconds):
@@ -224,6 +226,7 @@ class InstrumentationAgent:
         with tracer.observe(
             "prompt_construction",
             as_type="span",
+            input={"feature_slug": feature_slug, "context_available": bounded_context is not None},
             metadata={
                 **base_metadata,
                 **timing_metadata(
@@ -263,7 +266,11 @@ class InstrumentationAgent:
         agent_started = time.perf_counter()
         with tracer.observe(
             "instrumentation_agent",
-            as_type="span",
+            as_type="agent",
+            input={
+                "feature_slug": feature_slug,
+                "event_count": source_profile.file.valid_row_count,
+            },
             metadata={
                 **base_metadata,
                 **timing_metadata(
@@ -273,6 +280,7 @@ class InstrumentationAgent:
                     provider_status="started",
                 ),
             },
+            tags=["instrumentation"],
         ) as agent_observation:
             for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
                 attempt_number = attempt + 1
@@ -309,6 +317,7 @@ class InstrumentationAgent:
                 with tracer.observe(
                     generation_name,
                     as_type="generation",
+                    input={"attempt": attempt_number, "schema_name": request.schema_name},
                     metadata={
                         **base_metadata,
                         **timing_metadata(
@@ -322,13 +331,10 @@ class InstrumentationAgent:
                         ),
                     },
                     model=self._provider.model_name,
+                    tags=[generation_name, f"attempt-{attempt_number}"],
                 ) as generation_observation:
                     try:
-                        provider_result = await self._request_provider(
-                            request,
-                            tracer=tracer,
-                            base_metadata=base_metadata,
-                        )
+                        provider_result = await self._request_provider(request)
                     except asyncio.CancelledError:
                         log_timing(
                             logger,
@@ -345,6 +351,7 @@ class InstrumentationAgent:
                         raise
                     if isinstance(provider_result, ContractValidationIssue):
                         generation_observation.update(
+                            output={"validation_status": "provider_error"},
                             metadata={
                                 **base_metadata,
                                 **timing_metadata(
@@ -358,7 +365,9 @@ class InstrumentationAgent:
                                         model=self._provider.model_name,
                                     )
                                 ),
-                            }
+                            },
+                            level="ERROR",
+                            status_message=provider_result.code,
                         )
                         log_timing(
                             logger,
@@ -440,6 +449,10 @@ class InstrumentationAgent:
                                 **envelope_metadata,
                             }
                             generation_observation.update(
+                                output={
+                                    "response_bytes": len(response.content.encode("utf-8")),
+                                    "validation_status": "non_progressing_repair",
+                                },
                                 metadata={
                                     **base_metadata,
                                     **timing_metadata(**duplicate_timing),
@@ -525,6 +538,10 @@ class InstrumentationAgent:
                         **envelope_metadata,
                     }
                     generation_observation.update(
+                        output={
+                            "response_bytes": len(response.content.encode("utf-8")),
+                            "validation_status": generation_status,
+                        },
                         metadata={
                             **base_metadata,
                             **timing_metadata(**generation_timing),
@@ -683,9 +700,6 @@ class InstrumentationAgent:
     async def _request_provider(
         self,
         request: StructuredGenerationRequest,
-        *,
-        tracer: InstrumentationTracer,
-        base_metadata: dict[str, Any],
     ) -> Any | ContractValidationIssue:
         started = time.perf_counter()
         start_timing = _request_timing(
@@ -696,71 +710,58 @@ class InstrumentationAgent:
             model=self._provider.model_name,
         )
         log_timing(logger, "generation_started", **start_timing)
-        with tracer.observe(
-            "provider_request",
-            as_type="span",
-            metadata={**base_metadata, **timing_metadata(**start_timing)},
-        ) as provider_observation:
-            try:
-                response = await self._provider.generate(request)
-            except asyncio.CancelledError:
-                failed = {
-                    **start_timing,
-                    "elapsed_ms": _elapsed_ms(started),
-                    "provider_status": ProviderFailureCategory.CANCELLED.value,
-                    "error_type": ProviderFailureCategory.CANCELLED.value,
-                }
-                log_timing(logger, "generation_failed", **failed)
-                provider_observation.update(metadata={**base_metadata, **timing_metadata(**failed)})
-                raise
-            except ProviderError as exc:
-                failed = {
-                    **start_timing,
-                    "elapsed_ms": _elapsed_ms(started),
-                    "provider_status": exc.category.value,
-                    "error_type": exc.category.value,
-                    "status_code": exc.status_code,
-                }
-                log_timing(logger, "generation_failed", **failed)
-                provider_observation.update(metadata={**base_metadata, **timing_metadata(**failed)})
-                return ContractValidationIssue(
-                    code=exc.category.value,
-                    path="provider",
-                    message=exc.safe_message,
-                    status_code=exc.status_code,
-                    provider_error_code=exc.error_code,
-                )
-            except Exception:
-                category = ProviderFailureCategory.UNKNOWN_PROVIDER_ERROR
-                failed = {
-                    **start_timing,
-                    "elapsed_ms": _elapsed_ms(started),
-                    "provider_status": category.value,
-                    "error_type": category.value,
-                }
-                log_timing(logger, "generation_failed", **failed)
-                provider_observation.update(metadata={**base_metadata, **timing_metadata(**failed)})
-                return ContractValidationIssue(
-                    code=category.value,
-                    path="provider",
-                    message="structured generation provider failed unexpectedly",
-                )
+        try:
+            response = await self._provider.generate(request)
+        except asyncio.CancelledError:
+            failed = {
+                **start_timing,
+                "elapsed_ms": _elapsed_ms(started),
+                "provider_status": ProviderFailureCategory.CANCELLED.value,
+                "error_type": ProviderFailureCategory.CANCELLED.value,
+            }
+            log_timing(logger, "generation_failed", **failed)
+            raise
+        except ProviderError as exc:
+            failed = {
+                **start_timing,
+                "elapsed_ms": _elapsed_ms(started),
+                "provider_status": exc.category.value,
+                "error_type": exc.category.value,
+                "status_code": exc.status_code,
+            }
+            log_timing(logger, "generation_failed", **failed)
+            return ContractValidationIssue(
+                code=exc.category.value,
+                path="provider",
+                message=exc.safe_message,
+                status_code=exc.status_code,
+                provider_error_code=exc.error_code,
+            )
+        except Exception:
+            category = ProviderFailureCategory.UNKNOWN_PROVIDER_ERROR
+            failed = {
+                **start_timing,
+                "elapsed_ms": _elapsed_ms(started),
+                "provider_status": category.value,
+                "error_type": category.value,
+            }
+            log_timing(logger, "generation_failed", **failed)
+            return ContractValidationIssue(
+                code=category.value,
+                path="provider",
+                message="structured generation provider failed unexpectedly",
+            )
 
-            completed = _request_timing(
-                request,
-                stage="provider_request",
-                elapsed_ms=_elapsed_ms(started),
-                response_bytes=len(response.content.encode("utf-8")),
-                provider_status="ok",
-                model=response.model,
-            )
-            log_timing(logger, "generation_completed", **completed)
-            provider_observation.update(
-                metadata={**base_metadata, **timing_metadata(**completed)},
-                model=response.model,
-                usage_details=(response.usage.as_langfuse() if response.usage else None),
-            )
-            return response
+        completed = _request_timing(
+            request,
+            stage="provider_request",
+            elapsed_ms=_elapsed_ms(started),
+            response_bytes=len(response.content.encode("utf-8")),
+            provider_status="ok",
+            model=response.model,
+        )
+        log_timing(logger, "generation_completed", **completed)
+        return response
 
     @staticmethod
     def _blocked_result(

@@ -1,3 +1,5 @@
+import { compilerApiUrl } from "./api-base";
+
 export type PipelineStatus = "completed" | "contract_blocked" | "error" | string;
 
 export interface ContractFeature {
@@ -85,7 +87,7 @@ export async function runPipeline(
   form.append("events", events);
   form.append("dry_run", String(dryRun));
 
-  const response = await fetch("/compiler-api/pipeline/run", {
+  const response = await fetch(compilerApiUrl("/pipeline/run"), {
     method: "POST",
     body: form,
     signal,

@@ -1,6 +1,6 @@
 # Context Compiler UI
 
-This folder contains two UI services connected to the FastAPI backend:
+This standalone sibling project contains two UI services connected to the FastAPI backend:
 
 - React dashboard: `http://localhost:4173`
 - LibreChat: `http://localhost:3080`
@@ -18,8 +18,26 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Vite proxies `/compiler-api` to the backend, so no browser CORS
-configuration is needed for local development.
+Open `http://localhost:5173`. The browser calls `http://localhost:8000` directly by default. The
+backend and frontend are separate processes; no Vite or Nginx API proxy is used. The backend's
+CORS configuration must include the frontend origin.
+
+## Deploy the dashboard to Vercel
+
+Create a Vercel project with `cloudsuffers/ui` as its Root Directory. Vercel detects Vite; use
+`npm run build` as the build command and `dist` as the output directory. Configure:
+
+```dotenv
+VITE_COMPILER_API_URL=https://your-context-compiler.up.railway.app
+```
+
+The value is the Railway backend origin without a trailing slash.
+On Railway, add the deployed Vercel origin to
+`CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS`. Preview deployments need either their explicit preview
+origin or a deliberate preview-domain policy; do not use credentialed wildcard CORS.
+
+The Vercel build contains no backend credentials. Only the public backend origin is exposed to
+the browser; Langfuse, ClickHouse, and model keys remain on Railway.
 
 ## Start the complete UI stack
 

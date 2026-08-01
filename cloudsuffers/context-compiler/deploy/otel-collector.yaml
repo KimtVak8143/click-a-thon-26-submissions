@@ -1,0 +1,29 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+
+exporters:
+  otlphttp/langfuse:
+    endpoint: ${env:LANGFUSE_BASE_URL}/api/public/otel
+    headers:
+      Authorization: ${env:LANGFUSE_OTEL_AUTH_HEADER}
+      x-langfuse-ingestion-version: "4"
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/langfuse, debug]

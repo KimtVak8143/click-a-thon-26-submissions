@@ -4,6 +4,13 @@ import {
   type AnalyticsContract,
   type PipelineRunResponse,
 } from "./pipeline-api";
+import {
+  getDashboard,
+  type DashboardResponse,
+  type EvaluatorScore,
+  type ObservableTrace,
+} from "./dashboard-api";
+import { compilerApiUrl } from "./api-base";
 
 type Check = { status: "loading" | "ok" | "error"; detail: string };
 
@@ -15,11 +22,12 @@ const stageNames = [
   "Schema planned",
   "Context updated",
   "Insights generated",
+  "Recommendations evaluated",
 ];
 
 async function getCheck(path: string): Promise<Check> {
   try {
-    const response = await fetch(`/compiler-api${path}`);
+    const response = await fetch(compilerApiUrl(path));
     const data = (await response.json()) as { status?: string; detail?: unknown };
     if (!response.ok) {
       const detail = typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`;
@@ -41,7 +49,22 @@ export default function App() {
   const [requestError, setRequestError] = useState("");
   const [running, setRunning] = useState(false);
   const [dryRun, setDryRun] = useState(true);
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState("");
   const controller = useRef<AbortController | null>(null);
+
+  const refreshDashboard = useCallback(async () => {
+    setDashboardLoading(true);
+    setDashboardError("");
+    try {
+      setDashboard(await getDashboard());
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Observability data unavailable");
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const [apiCheck, clickhouseCheck, llmCheck] = await Promise.all([
@@ -52,7 +75,8 @@ export default function App() {
     setApi(apiCheck);
     setClickhouse(clickhouseCheck);
     setLlm(llmCheck);
-  }, []);
+    await refreshDashboard();
+  }, [refreshDashboard]);
 
   useEffect(() => void refresh(), [refresh]);
   useEffect(() => () => controller.current?.abort(), []);
@@ -80,7 +104,10 @@ export default function App() {
     setRequestError("");
     setResult(null);
     try {
-      setResult(await runPipeline(specFile, eventsFile, dryRun, abortController.signal));
+      const runResult = await runPipeline(specFile, eventsFile, dryRun, abortController.signal);
+      setResult(runResult);
+      await refreshDashboard();
+      window.setTimeout(() => void refreshDashboard(), 5_000);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         setRequestError("Pipeline run cancelled.");
@@ -103,6 +130,7 @@ export default function App() {
           <a href="#run">New run</a>
           <a href="#pipeline">Pipeline</a>
           <a href="#artifacts">Artifacts</a>
+          <a href="#observability">Observability</a>
           <a className="chat" href="http://localhost:3080" target="_blank" rel="noreferrer">Open LibreChat</a>
         </nav>
       </header>
@@ -216,9 +244,115 @@ export default function App() {
           ))}</div>
         ) : <p className="insight-empty">No insights available for this run.</p>}
       </section>
+      <ObservabilityDashboard
+        dashboard={dashboard}
+        loading={dashboardLoading}
+        error={dashboardError}
+        onRefresh={refreshDashboard}
+      />
       <footer>Context Compiler / end-to-end pipeline integration</footer>
     </main>
   );
+}
+
+function ObservabilityDashboard({
+  dashboard,
+  loading,
+  error,
+  onRefresh,
+}: {
+  dashboard: DashboardResponse | null;
+  loading: boolean;
+  error: string;
+  onRefresh: () => Promise<void>;
+}) {
+  const summary = dashboard?.observability;
+  const hasData = Boolean(summary?.has_data);
+  return <section className="observability" id="observability">
+    <div className="observability-heading">
+      <div>
+        <p className="eyebrow">AI OBSERVABILITY</p>
+        <h2>Recommendation quality & traces</h2>
+        <p>Langfuse scores, model economics, evaluator health, and reproducible recommendation decisions.</p>
+      </div>
+      <div className="observability-actions">
+        <span className={`source-badge ${summary?.langfuse_available ? "connected" : ""}`}>
+          {summary?.source ?? "Checking sources"}
+        </span>
+        <button className="secondary compact" onClick={() => void onRefresh()} disabled={loading}>
+          {loading ? "Refreshing…" : "Refresh metrics"}
+        </button>
+      </div>
+    </div>
+    {error && <p className="error" role="alert">{error}</p>}
+    {!error && !loading && !hasData ? <div className="observability-empty">
+      <strong>No observability records found yet</strong>
+      <p>Enable Langfuse, apply migrations 090–095, start the recommendation service, and run another journey.</p>
+    </div> : <>
+      <div className="observability-kpis">
+        <ObservabilityMetric label="Recent traces" value={formatNumber(summary?.trace_count)} detail={summary?.langfuse_available ? "Langfuse connected" : "ClickHouse export"} />
+        <ObservabilityMetric label="Approval rate" value={formatPercent(summary?.approval_rate)} detail={`${formatNumber(summary?.recommendation_count)} governed recommendations`} />
+        <ObservabilityMetric label="Avg confidence" value={formatPercent(summary?.average_confidence)} detail={`${formatPercent(summary?.failure_rate)} blocked`} />
+        <ObservabilityMetric label="Avg latency" value={formatMetricDuration(summary?.average_latency_ms)} detail={`${formatNumber(summary?.error_count)} traced errors`} />
+        <ObservabilityMetric label="Total tokens" value={formatNumber(summary?.total_tokens)} detail="Last 30 days" />
+        <ObservabilityMetric label="Total cost" value={formatMoney(summary?.total_cost_usd)} detail="Recent traced workload" />
+      </div>
+      <div className="observability-grid">
+        <article className="observability-panel score-panel">
+          <div className="panel-title"><div><h3>Evaluator scorecard</h3><p>Average score and sample size by evaluator.</p></div><span>{dashboard?.evaluator_scores.length ?? 0} metrics</span></div>
+          {dashboard?.evaluator_scores.length ? <div className="score-list">
+            {dashboard.evaluator_scores.map((score) => <ScoreRow score={score} key={`${score.source}:${score.name}`} />)}
+          </div> : <SmallEmpty text="No Langfuse or ClickHouse scores have been recorded." />}
+        </article>
+        <article className="observability-panel trace-panel">
+          <div className="panel-title"><div><h3>Recent traces</h3><p>Open a trace in Langfuse to inspect its span tree.</p></div><span>live</span></div>
+          {dashboard?.recent_traces.length ? <div className="trace-list">
+            {dashboard.recent_traces.slice(0, 8).map((trace) => <TraceRow trace={trace} key={trace.trace_id} />)}
+          </div> : <SmallEmpty text="No traces were returned by Langfuse or ClickHouse." />}
+        </article>
+      </div>
+      <article className="observability-panel recommendation-panel">
+        <div className="panel-title"><div><h3>Governed recommendations</h3><p>Publication status, model, prompt version, confidence, and trace correlation.</p></div><span>ClickHouse</span></div>
+        {dashboard?.recommendations.length ? <div className="recommendation-table-wrap"><table className="recommendation-table">
+          <thead><tr><th>Status</th><th>Recommendation</th><th>Confidence</th><th>Model / prompt</th><th>Created</th></tr></thead>
+          <tbody>{dashboard.recommendations.map((item) => <tr key={item.recommendation_id}>
+            <td><span className={`decision ${item.status === "APPROVED" ? "approved" : "blocked"}`}>{item.status.replaceAll("_", " ")}</span></td>
+            <td><strong>{item.recommendation}</strong><code>{shortId(item.trace_id)}</code></td>
+            <td>{formatPercent(item.confidence)}</td>
+            <td>{item.model}<small>prompt v{item.prompt_version}</small></td>
+            <td>{formatTimestamp(item.created_at)}</td>
+          </tr>)}</tbody>
+        </table></div> : <SmallEmpty text="No governed recommendation rows yet. Existing Langfuse traces can still be inspected above." />}
+      </article>
+    </>}
+  </section>;
+}
+
+function ObservabilityMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="observability-metric"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function ScoreRow({ score }: { score: EvaluatorScore }) {
+  const bounded = Math.max(0, Math.min(1, score.value));
+  const risk = score.name.toLowerCase().includes("hallucination");
+  return <div className="score-row">
+    <div><strong>{prettyScore(score.name)}</strong><small>{score.count} samples · {score.source}</small></div>
+    <div className="score-bar" aria-label={`${prettyScore(score.name)} ${Math.round(bounded * 100)} percent`}><i className={risk ? "risk" : ""} style={{ width: `${bounded * 100}%` }} /></div>
+    <b>{Math.round(bounded * 100)}%</b>
+  </div>;
+}
+
+function TraceRow({ trace }: { trace: ObservableTrace }) {
+  const content = <>
+    <i className={trace.status === "error" ? "error" : "ok"} />
+    <span><strong>{trace.name}</strong><small>{formatTimestamp(trace.timestamp)} · {formatMetricDuration(trace.latency_ms)} · {trace.observations ?? "—"} spans</small></span>
+    <code>{formatMoney(trace.cost_usd)}</code>
+  </>;
+  return trace.url ? <a className="trace-row" href={trace.url} target="_blank" rel="noreferrer">{content}</a> : <div className="trace-row">{content}</div>;
+}
+
+function SmallEmpty({ text }: { text: string }) {
+  return <p className="small-empty">{text}</p>;
 }
 
 function ContractSummary({ contract }: { contract: AnalyticsContract | null }) {
@@ -282,4 +416,36 @@ function pipelineSummary(result: PipelineRunResponse | null, running: boolean) {
   if (!result) return "Waiting for a pipeline run.";
   if (result.status === "completed") return "All orchestration stages completed.";
   return `The pipeline finished with status ${result.status}.`;
+}
+
+function formatNumber(value: number | null | undefined) {
+  return value == null ? "—" : new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatPercent(value: number | null | undefined) {
+  return value == null ? "—" : `${Math.round(value * 100)}%`;
+}
+
+function formatMetricDuration(value: number | null | undefined) {
+  if (value == null) return "—";
+  return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
+}
+
+function formatMoney(value: number | null | undefined) {
+  if (value == null) return "—";
+  return value < 0.01 && value > 0 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`;
+}
+
+function formatTimestamp(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function prettyScore(value: string) {
+  return value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function shortId(value: string) {
+  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value;
 }
