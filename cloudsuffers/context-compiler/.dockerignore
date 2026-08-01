@@ -47,10 +47,10 @@ htmlcov/
 .env.production
 .env.*.local
 
-# Documentation (not needed in image)
-*.md
+# Documentation (keep docs/ for base_context.md - required at runtime)
+# But exclude markdown files in root
+/*.md
 !README.md
-docs/
 
 # Tests (not needed in production)
 tests/
