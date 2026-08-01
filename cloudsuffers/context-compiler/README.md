@@ -22,13 +22,6 @@ cp .env.example .env
 uv sync
 ```
 
-To configure and launch the complete local stack in one command, see
-[Run the complete application](docs/RUN_APPLICATION.md) or run:
-
-```bash
-./scripts/setup-and-run.sh up
-```
-
 For a local ClickHouse instance using Docker:
 
 ```bash
@@ -104,6 +97,34 @@ CONTEXT_COMPILER_CORS_ALLOW_CREDENTIALS=false
 
 Only enable credentials when the frontend actually uses cookie-based authentication. Wildcard
 origins cannot be combined with credentials.
+
+## Langfuse Tracing (Optional)
+
+Context Compiler includes comprehensive **Langfuse** integration for observability of all agent activities, LLM generations, and analytical workflows. This provides:
+
+- ✅ Full tracing of all three agents (Instrumentation, Analytics, Context)
+- ✅ Token usage tracking and cost analysis
+- ✅ Agent execution graphs and nested observations
+- ✅ Proper observation types (`generation`, `agent`, `span`)
+- ✅ Input/output tracking with sensitive data masking
+- ✅ Feature tagging and metadata for filtering
+
+### Quick Setup
+
+1. Sign up for Langfuse (free tier available): [langfuse.com/cloud](https://langfuse.com/cloud)
+2. Create a project and get your API keys (Settings → API Keys)
+3. Add credentials to `.env`:
+
+```dotenv
+CONTEXT_COMPILER_LANGFUSE_ENABLED=true
+CONTEXT_COMPILER_LANGFUSE_PUBLIC_KEY=pk-lf-...
+CONTEXT_COMPILER_LANGFUSE_SECRET_KEY=sk-lf-...
+CONTEXT_COMPILER_LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+4. Run the API and view traces in the Langfuse dashboard
+
+For detailed documentation, see **[docs/LANGFUSE_INTEGRATION.md](docs/LANGFUSE_INTEGRATION.md)**
 
 Verify the service and ClickHouse separately:
 
