@@ -38,8 +38,9 @@ def test_runner_applies_all_migrations_in_filename_order() -> None:
         "093_ai_evaluations.sql",
         "094_ai_judge_results.sql",
         "095_reasoning_provenance.sql",
+        "096_baseline_metric_snapshots.sql",
     ]
-    assert len(repository.statements) == 20
+    assert len(repository.statements) == 21
     assert all(statement.startswith(("CREATE ", "ALTER ")) for statement in repository.statements)
     assert all("{metadata_database}" not in statement for statement in repository.statements)
     assert all("compiler_meta" in statement for statement in repository.statements)

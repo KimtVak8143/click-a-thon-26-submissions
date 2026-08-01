@@ -72,6 +72,7 @@ async def run_pipeline(
     schema_planner = request.app.state.schema_planner
     context_agent = request.app.state.context_agent
     analytics_agent = request.app.state.analytics_agent
+    baseline_metrics_service = request.app.state.baseline_metrics
 
     started_wall = datetime.now(UTC)
     started = time.perf_counter()
@@ -192,14 +193,40 @@ async def run_pipeline(
                 trace_observation=pipeline_observation,
             )
 
+        baseline_snapshot = None
+        with tracer.observe(
+            "retrieve-baseline-metrics",
+            as_type="retriever",
+            input={"source_database": settings.clickhouse_database},
+        ) as baseline_observation:
+            try:
+                baseline_snapshot = await run_in_threadpool(baseline_metrics_service.precompute)
+            except Exception:
+                logger.warning("pipeline_baseline_metrics_lookup_failed")
+            baseline_observation.update(
+                output={
+                    "found": baseline_snapshot is not None,
+                    "snapshot_id": (
+                        str(baseline_snapshot.snapshot_id) if baseline_snapshot else None
+                    ),
+                    "metric_count": (len(baseline_snapshot.metrics) if baseline_snapshot else 0),
+                }
+            )
+
+        context_payload = json.loads(approved_context.compact_json())
+        context_evidence_ids = list(approved_context.evidence_ids)
+        if baseline_snapshot is not None:
+            context_payload["baseline_metrics"] = baseline_snapshot.compact()
+            context_evidence_ids.extend(baseline_snapshot.evidence_ids)
+
         # 3. Generate contract
         contract_result = await agent.generate_contract(
             feature_spec,
             source_profile,
-            context_summary=approved_context.compact_json(),
+            context_summary=json.dumps(context_payload, sort_keys=True, default=str),
             context_version_id=approved_context.context_version_id,
             context_content_sha256=approved_context.content_sha256,
-            context_evidence_ids=approved_context.evidence_ids,
+            context_evidence_ids=sorted(set(context_evidence_ids)),
             tracer=tracer,
             run_id=run_id,
         )

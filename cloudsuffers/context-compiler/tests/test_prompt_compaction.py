@@ -6,6 +6,7 @@ from app.context.bootstrap import build_base_context_bundle
 from app.contracts.intent import ContractIntent
 from app.contracts.models import AnalyticsContract
 from app.contracts.prompts import (
+    _bound_context_json,
     _filter_context_for_profile,
     build_generation_request,
     compact_json_schema,
@@ -163,6 +164,36 @@ def test_prompt_uses_compact_context_projection_without_official_source_text() -
     assert "application_purchase_conversion_rate" not in prompt
     assert "700K+ applications annually" not in prompt
     assert "source_content" not in prompt
+
+
+def test_context_budget_preserves_valid_json_and_baseline_evidence() -> None:
+    context = json.dumps(
+        {
+            "canonical_funnel": ["started", "completed"],
+            "entities": [{"entity_id": "application", "key_fields": ["application_id"]}],
+            "baseline_metrics": {
+                "snapshot_id": "snapshot-1",
+                "evidence_ids": ["baseline:funnel:snapshot-1"],
+                "metrics": [
+                    {
+                        "metric_id": "funnel",
+                        "result": [{"conversion_pct": 12.5}],
+                        "evidence_id": "baseline:funnel:snapshot-1",
+                    }
+                ],
+            },
+            "evidence_ids": ["baseline:funnel:snapshot-1"],
+            "issues": [{"large": "x" * 5_000}],
+        }
+    )
+
+    bounded = _bound_context_json(context, 800)
+    payload = json.loads(bounded)
+
+    assert len(bounded) <= 800
+    assert payload["baseline_metrics"]["metrics"][0]["result"][0]["conversion_pct"] == 12.5
+    assert payload["evidence_ids"] == ["baseline:funnel:snapshot-1"]
+    assert payload["context_truncated"] is True
 
 
 def _make_profile(tmp_path: Path, *, field: str = "application_id") -> object:

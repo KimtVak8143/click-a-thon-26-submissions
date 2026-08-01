@@ -66,6 +66,10 @@ def test_plan_produces_event_table_ddl_and_materialized_view() -> None:
     assert "ORDER BY (application_id, event_name, timestamp)" in record.ddl
     assert "CREATE MATERIALIZED VIEW" in record.ddl
     assert "toYYYYMM(timestamp)" in record.ddl
+    assert "TTL timestamp + INTERVAL 730 DAY DELETE" in record.ddl
+    assert "uniqExactState(application_id) AS unique_entity_count" in record.ddl
+    assert "countState(DISTINCT" not in record.ddl
+    assert " -- scoped to events:" not in record.ddl
     inventory = json.loads(record.object_inventory_json)
     assert inventory["strategy"] == "materialized_aggregate"
     assert "express_checkout_events" in inventory["tables"]

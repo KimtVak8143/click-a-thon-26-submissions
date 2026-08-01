@@ -71,6 +71,7 @@ contains one idempotent `CREATE` or `ALTER` statement. Context metadata includes
 - `ai_traces` and `ai_spans`
 - `ai_recommendations`, `ai_evaluations`, and `ai_judge_results`
 - `reasoning_provenance`
+- `baseline_metric_snapshots`
 
 Bootstrap the byte-exact official context after migrations:
 
@@ -82,6 +83,34 @@ uv run python -m app.cli bootstrap-context --source docs/base_context.md
 The SHA-derived bootstrap is idempotent. It stores the official source unchanged as provenance,
 while prompts receive only a bounded redacted projection. CTX-001 through CTX-010 are typed audit
 findings; K1 through K7 remain explicitly unproven hypotheses.
+
+## Atlys baseline and feature benchmark
+
+After the eight source event tables are loaded, precompute the aggregate evidence used by the
+Instrumentation Agent:
+
+```bash
+uv run python -m app.cli precompute-baseline
+```
+
+The snapshot is fingerprinted from logical table row/time coverage, so repeat runs reuse the same
+snapshot until source data changes. It stores ordered session/application funnels, pay-to-purchase
+conversion, document quality, currency-separated revenue, and source health. Prompts receive only
+aggregate results, checksums, and evidence IDs—never the SQL or raw rows. Every pipeline run checks
+the fingerprint before contract generation and recomputes only when necessary.
+
+Run every complete `spec.md` + `events.ndjson` package under a directory with:
+
+```bash
+uv run python -m app.cli benchmark-atlys \
+  --specs-root Atlys/specs \
+  --output artifacts/atlys_benchmark.json
+```
+
+Package discovery is dynamic; placing the sixth feature in the same format includes it without a
+code change. Each package produces a Langfuse root trace, validated contract, dry-run ClickHouse
+DDL, and schema-quality checks for field mapping, partitioning, workflow ordering, TTL, aggregate
+state syntax, and funnel-view presence.
 
 ## Run the API
 
