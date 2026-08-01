@@ -1,4 +1,31 @@
 -- #####################################################################
+-- seed_content_for_live_ids.sql — fill content_dim for the content_ids your
+-- live producer is actually sending (1001-1003, 2001-2002, 3001-3004),
+-- which aren't in content_dim yet -> dictGet('title',...) returns ''.
+-- Adjust titles/video_type/category to match your producer if it uses a
+-- different convention; run once, then reload the dictionary.
+-- #####################################################################
+
+INSERT INTO sonyliv_concurrency.content_dim (content_id, title, video_type, category) VALUES
+  (1001, 'Live Match 1',  'live', 'sports'),
+  (1002, 'Live Match 2',  'live', 'sports'),
+  (1003, 'Live Match 3',  'live', 'sports'),
+  (2001, 'Movie A',       'vod',  'drama'),
+  (2002, 'Movie B',       'vod',  'drama'),
+  (3001, 'Show A',        'vod',  'comedy'),
+  (3002, 'Show B',        'vod',  'comedy'),
+  (3003, 'Show C',        'vod',  'comedy'),
+  (3004, 'Show D',        'vod',  'comedy');
+
+SYSTEM RELOAD DICTIONARY sonyliv_concurrency.content_dict;
+
+-- verify
+SELECT content_id, dictGet('sonyliv_concurrency.content_dict','title', content_id) AS title
+FROM (SELECT DISTINCT content_id FROM sonyliv_concurrency.concurrency_now)
+ORDER BY content_id;
+
+
+-- #####################################################################
 -- seed_sample.sql — placeholder data to smoke-test the schema without CSVs/Kafka.
 -- Seeds the mapping table (content_dim) + dictionary, and a few live sessions
 -- (timestamps relative to now()), then refreshes the MVs so concurrency_now

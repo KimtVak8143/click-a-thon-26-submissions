@@ -18,17 +18,31 @@
 --     (the aggregates live in cold_abs).
 -- COMPUTE (bounded, never rescans history):
 --   * Derivation window = 20 min, hot window = 10 min, freeze horizon = 10 min.
---     Recompute cost ∝ (window × ACTIVE sessions), independent of total history.
+--     Recompute cost ∝ (window × ACTIVE sessions), independent of TOTAL history —
+--     but see the open caveat below re: per-session cost within that window.
 --     Keep windows as TIGHT as p99 heartbeat lag allows (measure via ClickStack).
---   * Refresh cadence: hot 30 s (freshness) · derivation 1 min · compaction 1 min.
---     Raise cadence if refresh time approaches the interval (watch REFRESH duration).
+--   * Refresh cadence: derivation 30 s · hot 30 s · compaction ~1 min.
+--     Tightened from 1 min so an open session's state reaches concurrency_now
+--     within ~30-60s end-to-end. Raise cadence back if refresh duration
+--     approaches the interval (watch via system.view_refreshes / query_log).
 --   * Cold is append-only forward-fill → finalized minutes are never recomputed.
+--   * D3/D4 filter session_intervals to the hot/freeze window BEFORE the
+--     ARRAY JOIN expansion (not after) — provably equivalent, avoids expanding
+--     the table's full retained history (3-day TTL) every cycle.
 -- SERVE (fast under write load):
 --   * Serving tables are absolute per (dims,minute) → queries are filter→sum→max/avg,
 --     tiny reads, no cumsum. content_dict avoids JOINs on the hot path.
+-- KNOWN OPEN CAVEAT (documented, not yet fixed — see PLAN.md §9):
+--   * mv_session_intervals re-derives a session's FULL event history on every
+--     refresh (bounded by session activity, not by the 20-min window itself),
+--     so cost per active session grows with session DURATION, not just count.
+--     For hours-long live-sport sessions this is the next real bottleneck.
+--     Fix path: an incremental per-session cursor (carry watching-state +
+--     last-processed-ts forward, process only NEW events each cycle) instead
+--     of full re-derivation — a genuine architecture change, not applied here.
 -- SCALE-OUT (100×): shard by video_session_id; size the service to peak concurrency
 --   not event volume; if a single refresh can't finish in its interval, split the
---   hot window across parallel refreshes or move to per-session incremental state.
+--   hot window across parallel refreshes or adopt the incremental-cursor fix above.
 -- ===============================================================================
 -- #####################################################################
 
@@ -86,7 +100,8 @@ CREATE TABLE IF NOT EXISTS sonyliv_concurrency.session_intervals
     content_id UInt64, platform LowCardinality(String), country LowCardinality(String),
     video_type LowCardinality(String), category LowCardinality(String), version UInt64
 )
-ENGINE = ReplacingMergeTree(version) ORDER BY (video_session_id, interval_idx);
+ENGINE = ReplacingMergeTree(version) ORDER BY (video_session_id, interval_idx)
+TTL toDateTime(active_end) + INTERVAL 3 DAY;   -- bound growth; cold_abs already holds the durable aggregate
 
 -- Serving tiers: ABSOLUTE concurrency per (dims, minute).
 -- cold = ReplacingMergeTree so a re-fired/retried compaction can't double-count
@@ -163,11 +178,13 @@ SELECT video_session_id, user_id, content_id, event_type, event,
        norm_dim(player_version)     AS player_version
 FROM sonyliv_concurrency.events_incoming;
 
--- D2. events_raw → session_intervals (state machine, recent 30-min window).
+-- D2. events_raw → session_intervals (state machine, recent 20-min window).
 -- Events collapsed per (session, ms): deactivate > reactivate > neutral (determinism).
+-- Refresh every 30s (tightened from 1min) so an open session's state reaches
+-- concurrency_now within ~30-60s end-to-end instead of ~60-90s.
 DROP VIEW IF EXISTS sonyliv_concurrency.mv_session_intervals;
 CREATE MATERIALIZED VIEW sonyliv_concurrency.mv_session_intervals
-REFRESH EVERY 1 MINUTE TO sonyliv_concurrency.session_intervals EMPTY AS
+REFRESH EVERY 30 SECOND TO sonyliv_concurrency.session_intervals EMPTY AS
 SELECT video_session_id, interval_idx, active_start, active_end,
        toUInt8(active_end >= now() - toIntervalSecond(cfg_gap_timeout_seconds())) AS is_provisional,
        content_id, platform, country,
@@ -220,6 +237,10 @@ DROP VIEW IF EXISTS sonyliv_concurrency.concurrency_hot_abs_mv;
 CREATE MATERIALIZED VIEW sonyliv_concurrency.concurrency_hot_abs_mv
 REFRESH EVERY 30 SECOND DEPENDS ON sonyliv_concurrency.mv_session_intervals
 TO sonyliv_concurrency.concurrency_hot_abs EMPTY AS
+-- Perf fix: filter to the hot window BEFORE the ARRAY JOIN expansion, not after.
+-- A row with active_end before the window can never produce a minute inside it,
+-- so this is provably equivalent to the old filter — just avoids expanding
+-- (and scanning) session_intervals' entire history every 30s as it grows.
 SELECT country, platform, video_type, category, minute, content_id,
        toUInt32(uniqExact(video_session_id)) AS concurrent
 FROM (
@@ -237,12 +258,30 @@ FROM (
 WHERE minute > toStartOfInterval(now(), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE
 GROUP BY country, platform, video_type, category, minute, content_id;
 
--- D4. COLD compaction — schedule this INSERT every ~1 min (app/cron), NOT a view:
---   INSERT INTO sonyliv_concurrency.concurrency_cold_abs
---   SELECT country,platform,video_type,category,minute,content_id, toUInt32(uniqExact(video_session_id))
---   FROM ( <same expand as D3> )
---   WHERE minute <= toStartOfInterval(now(), toIntervalSecond(cfg_bucket_seconds())) - INTERVAL 10 MINUTE
---     AND minute >  (SELECT max(minute) FROM sonyliv_concurrency.concurrency_cold_abs)
---   GROUP BY country,platform,video_type,category,minute,content_id;
+-- D4. COLD compaction — schedule this INSERT every ~1 min (app/cron), NOT a
+-- view (it must run AFTER D2/D3 each cycle so session_intervals is current).
+-- Same pre-ARRAY-JOIN pruning as D3. concurrency_cold_abs is ReplacingMergeTree
+-- so a retried/overlapping run can't double-count; forward-fill guard also
+-- keeps it idempotent and append-only (never touches already-frozen minutes).
+--
+-- INSERT INTO sonyliv_concurrency.concurrency_cold_abs
+-- SELECT country, platform, video_type, category, minute, content_id,
+--        toUInt32(uniqExact(video_session_id)) AS concurrent
+-- FROM (
+--   SELECT video_session_id, country, platform, video_type, category, content_id,
+--          toStartOfMinute(active_start) + INTERVAL number MINUTE AS minute
+--   FROM (
+--     SELECT video_session_id, country, platform, video_type, category, content_id, active_start, active_end
+--     FROM sonyliv_concurrency.session_intervals FINAL
+--     WHERE active_end > active_start
+--       AND active_end <= toStartOfMinute(now()) - INTERVAL 10 MINUTE          -- only fully-aged intervals
+--   )
+--   ARRAY JOIN range(0, toUInt64(dateDiff('minute',
+--                  toStartOfMinute(active_start),
+--                  toStartOfMinute(active_end - INTERVAL 1 MILLISECOND)) + 1)) AS number
+-- )
+-- WHERE minute <= toStartOfMinute(now()) - INTERVAL 10 MINUTE
+--   AND minute >  (SELECT max(minute) FROM sonyliv_concurrency.concurrency_cold_abs)  -- forward-fill only
+-- GROUP BY country, platform, video_type, category, minute, content_id;
 
 SHOW TABLES FROM sonyliv_concurrency;
