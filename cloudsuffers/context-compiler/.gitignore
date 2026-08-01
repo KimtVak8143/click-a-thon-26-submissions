@@ -8,3 +8,4 @@ dist/
 build/
 phase2a1-live-response.json
 /artifacts
+.DS_Store

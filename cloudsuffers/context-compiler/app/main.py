@@ -4,9 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
+from app.agents.analytics import AnalyticsAgent
+from app.agents.context_agent import ContextAgent
 from app.agents.instrumentation import InstrumentationAgent
+from app.agents.schema_planner import SchemaPlanner
 from app.api.contracts import router as contracts_router
+from app.api.dashboard import router as dashboard_router
 from app.api.health import router as health_router
+from app.api.pipeline import router as pipeline_router
 from app.api.profiles import router as profiles_router
 from app.clickhouse.client import build_clickhouse_client
 from app.clickhouse.repository import ClickHouseHealthRepository
@@ -25,6 +30,9 @@ def create_app(
     source_profiler: SourceProfiler | None = None,
     structured_provider: StructuredGenerationProvider | None = None,
     context_repository: ContextRepositoryProtocol | None = None,
+    schema_planner: SchemaPlanner | None = None,
+    context_agent: ContextAgent | None = None,
+    analytics_agent: AnalyticsAgent | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings.log_level)
@@ -51,6 +59,21 @@ def create_app(
         context_max_chars=app_settings.contract_context_max_chars,
         total_timeout_seconds=app_settings.llm_total_generation_timeout_seconds,
     )
+    schema_planner_instance = schema_planner or SchemaPlanner(
+        client_factory=lambda: build_clickhouse_client(app_settings),
+        database=app_settings.clickhouse_database,
+    )
+    context_agent_instance = context_agent or ContextAgent(
+        context_repository=approved_context_repository,
+        client_factory=lambda: build_clickhouse_client(app_settings),
+        metadata_database=app_settings.clickhouse_metadata_database,
+    )
+    analytics_agent_instance = analytics_agent or AnalyticsAgent(
+        provider=provider,
+        client_factory=lambda: build_clickhouse_client(app_settings),
+        analytical_database=app_settings.clickhouse_database,
+        metadata_database=app_settings.clickhouse_metadata_database,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -74,6 +97,18 @@ def create_app(
                 approved_context_repository.close()
             except Exception:
                 logger.warning("context_repository_shutdown_failed")
+            try:
+                schema_planner_instance.close()
+            except Exception:
+                logger.warning("schema_planner_shutdown_failed")
+            try:
+                context_agent_instance.close()
+            except Exception:
+                logger.warning("context_agent_shutdown_failed")
+            try:
+                analytics_agent_instance.close()
+            except Exception:
+                logger.warning("analytics_agent_shutdown_failed")
             shutdown_langfuse(application.state.langfuse)
             logger.info("application_stopped")
 
@@ -88,10 +123,15 @@ def create_app(
     app.state.instrumentation_agent = instrumentation_agent
     app.state.llm_provider = provider
     app.state.context_repository = approved_context_repository
+    app.state.schema_planner = schema_planner_instance
+    app.state.context_agent = context_agent_instance
+    app.state.analytics_agent = analytics_agent_instance
     app.state.langfuse = None
     app.include_router(health_router)
     app.include_router(profiles_router)
     app.include_router(contracts_router)
+    app.include_router(pipeline_router)
+    app.include_router(dashboard_router)
     return app
 
 
