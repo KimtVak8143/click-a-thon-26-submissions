@@ -107,7 +107,8 @@ GROUP BY platform ORDER BY peak DESC;
 WITH
   coalesce(parseDateTimeBestEffortOrNull({from:String},'UTC'), (SELECT min(minute) FROM sonyliv_concurrency.concurrency_now)) AS from_ts,
   coalesce(parseDateTimeBestEffortOrNull({to:String},'UTC'),   (SELECT max(minute) FROM sonyliv_concurrency.concurrency_now)) AS to_ts
-SELECT content_id, dictGet('sonyliv_concurrency.content_dict','title', content_id) AS title,
+SELECT content_id,
+       dictGetOrDefault('sonyliv_concurrency.content_dict','title', content_id, concat('Unknown (', toString(content_id), ')')) AS title,
        max(c) AS peak, argMax(minute, c) AS peak_minute
 FROM (
   SELECT content_id, minute, sum(concurrent) AS c
