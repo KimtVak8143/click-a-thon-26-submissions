@@ -47,21 +47,38 @@ No ClickHouse credentials are stored in source control.
 
 ## Migrations
 
-Apply all ordered, idempotent migrations to create `compiler_meta` and its initial tables:
+Apply all ordered, idempotent migrations to create the configured metadata database and tables:
 
 ```bash
 uv run python -m app.clickhouse.migrations
 ```
 
-The runner executes each `migrations/*.sql` file in filename order. Each file contains one
-`CREATE ... IF NOT EXISTS` statement, so rerunning the command is safe. The initial tables are:
+The runner renders `CONTEXT_COMPILER_CLICKHOUSE_METADATA_DATABASE` separately from the analytical
+`CONTEXT_COMPILER_CLICKHOUSE_DATABASE`, then executes each migration in filename order. Every file
+contains one idempotent `CREATE` or `ALTER` statement. Context metadata includes:
 
 - `pipeline_runs`
 - `analytics_contracts`
 - `schema_versions`
 - `context_versions`
+- `context_sources`
+- `context_entities`
+- `context_metrics`
+- `context_relationships`
 - `context_issues`
+- `context_changelog`
 - `query_evidence`
+
+Bootstrap the byte-exact official context after migrations:
+
+```bash
+uv run python -m app.context.bootstrap --source docs/base_context.md
+uv run python -m app.cli bootstrap-context --source docs/base_context.md
+```
+
+The SHA-derived bootstrap is idempotent. It stores the official source unchanged as provenance,
+while prompts receive only a bounded redacted projection. CTX-001 through CTX-010 are typed audit
+findings; K1 through K7 remain explicitly unproven hypotheses.
 
 ## Run the API
 
@@ -132,10 +149,30 @@ curl --fail-with-body \
 
 Configure any OpenAI-compatible structured-output endpoint with `LLM_BASE_URL`, `LLM_API_KEY`,
 `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`, and `LLM_MAX_RETRIES`. The HTTP client is initialized lazily.
-The agent sends the untrusted specification, a value-redacted aggregate source profile, the
-AnalyticsContract JSON schema, and bounded optional context. It never sends raw NDJSON rows.
-Invalid candidates are returned to the model with safe validation errors for at most two repair
-attempts; exhausted attempts return a structured blocked result.
+`LLM_STRUCTURED_OUTPUT_MODE` selects `json_object` (the default for Ollama compatibility) or
+`json_schema`; `LLM_MAX_OUTPUT_TOKENS`, `LLM_TEMPERATURE`, and
+`LLM_TOTAL_GENERATION_TIMEOUT_SECONDS` bound generation behavior. One pooled async client is reused
+for generation, repairs, and health checks, then closed during application shutdown.
+The agent sends the untrusted specification, a value-redacted aggregate source profile, the compact
+`ContractIntent` JSON schema, and bounded optional context. It never sends the complete
+`AnalyticsContract` schema or asks the model to reproduce deterministic source metadata.
+Presentation-only schema metadata and local-only profile diagnostics are omitted, and raw NDJSON
+rows are never sent. A validated intent is deterministically compiled into the complete contract,
+then passed through the existing final Pydantic and grounding gates. Invalid intents are returned
+to the model with exact safe reference errors for at most two repair attempts; exhausted attempts
+return a structured blocked result. `LLM_MAX_OUTPUT_TOKENS` defaults to `2500` for the compact IR.
+
+Before provider invocation, the endpoint resolves the latest approved context. Successful
+responses include `context_version_id` and `context_content_sha256`; missing or unavailable
+context produces a structured blocked result without an LLM call. Contract 1.0 remains compatible
+with historical artifacts because the added provenance/evidence fields have deserialization
+defaults, while newly compiled contracts populate explicit workflow grain, attribution,
+deduplication, computability, dimensions, and evidence references.
+
+`GET /health/llm` checks configuration, endpoint reachability, and configured-model availability
+through `/models` when supported. It never performs generation. Safe structured logs and Langfuse
+metadata expose upload, profiling, prompt, provider, parsing, validation, repair, and total timing
+without recording prompts, responses, event rows, identifiers, or credentials.
 
 ## Langfuse
 

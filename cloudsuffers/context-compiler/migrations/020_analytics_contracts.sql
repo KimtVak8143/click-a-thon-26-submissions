@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compiler_meta.analytics_contracts
+CREATE TABLE IF NOT EXISTS {metadata_database}.analytics_contracts
 (
     contract_id UUID,
     run_id UUID,

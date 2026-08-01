@@ -72,6 +72,44 @@ class CandidateIdentifier(StrictModel):
     coverage: float = Field(ge=0, le=1)
     uniqueness_ratio: float = Field(ge=0, le=1)
     uniqueness_ratio_mode: Literal["exact", "lower_bound"]
+    empty_string_count: int = Field(default=0, ge=0)
+    non_empty_coverage: float = Field(default=0, ge=0, le=1)
+
+
+class NamedKeyCoverage(StrictModel):
+    field_path: Literal["application_id", "session_id", "user_id"]
+    presence_rate: float = Field(ge=0, le=1)
+    non_null_rate: float = Field(ge=0, le=1)
+    non_empty_rate: float = Field(ge=0, le=1)
+
+
+class DuplicateEventIdProfile(StrictModel):
+    field_path: str
+    non_null_count: int = Field(ge=0)
+    distinct_count: int = Field(ge=0)
+    duplicate_count_lower_bound: int = Field(ge=0)
+    duplicate_rate_lower_bound: float = Field(ge=0, le=1)
+    distinct_count_mode: Literal["exact", "lower_bound"]
+
+
+class CurrencyFieldProfile(StrictModel):
+    field_path: str
+    presence_rate: float = Field(ge=0, le=1)
+    distinct_count: int = Field(ge=0)
+    distinct_count_mode: Literal["exact", "lower_bound"]
+
+
+class CanonicalDimensionCandidate(StrictModel):
+    field_path: str
+    canonical_dimension: Literal["device", "os", "geo", "destination", "app_version"]
+    presence_rate: float = Field(ge=0, le=1)
+
+
+class TimeQualityIndicators(StrictModel):
+    timestamp_field_candidates: list[str] = Field(default_factory=list)
+    parsed_timestamp_count: int = Field(ge=0)
+    non_monotonic_transition_count: int = Field(ge=0)
+    source_order_monotonic: bool
 
 
 class DataQualityCode(StrEnum):
@@ -108,6 +146,13 @@ class SourceProfile(StrictModel):
     fields: list[FieldProfile]
     candidate_identifiers: list[CandidateIdentifier]
     data_quality_observations: list[DataQualityObservation]
+    candidate_event_name_fields: list[str] = Field(default_factory=list)
+    candidate_timestamp_fields: list[str] = Field(default_factory=list)
+    named_key_coverage: list[NamedKeyCoverage] = Field(default_factory=list)
+    duplicate_event_id: DuplicateEventIdProfile | None = None
+    currency_fields: list[CurrencyFieldProfile] = Field(default_factory=list)
+    canonical_dimension_candidates: list[CanonicalDimensionCandidate] = Field(default_factory=list)
+    time_quality: TimeQualityIndicators | None = None
     limits: ProfilerLimits
 
     @property

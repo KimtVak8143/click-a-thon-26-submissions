@@ -1,1 +1,1 @@
-CREATE DATABASE IF NOT EXISTS compiler_meta
+CREATE DATABASE IF NOT EXISTS {metadata_database}

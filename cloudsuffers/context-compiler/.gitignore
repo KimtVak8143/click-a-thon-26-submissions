@@ -6,3 +6,5 @@ __pycache__/
 *.py[cod]
 dist/
 build/
+phase2a1-live-response.json
+/artifacts

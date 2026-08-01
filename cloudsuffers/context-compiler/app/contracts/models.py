@@ -2,6 +2,7 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Self
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -12,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.context.models import MetricComputability
 from app.profiling.models import Sha256, SourceProfile
 
 _CONTRACT_VERSION = re.compile(r"^1\.0$")
@@ -63,6 +65,7 @@ class EntityDefinition(ContractModel):
     description: str = Field(min_length=1)
     role: EntityRole
     stable: bool
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class EventDefinition(ContractModel):
@@ -110,6 +113,9 @@ class FunnelDefinition(ContractModel):
     steps: list[FunnelStep] = Field(min_length=2)
     ordered: bool
     description: str | None = None
+    workflow_grain: str | None = None
+    attribution_window: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_steps(self) -> Self:
@@ -149,6 +155,13 @@ class MetricDefinition(ContractModel):
     value_type: MetricValueType
     currency_dimension: str | None = None
     fx_normalization_rule: str | None = None
+    time_attribution: str | None = None
+    deduplication_policy: str | None = None
+    dimensions: list[str] = Field(default_factory=list)
+    computability: MetricComputability = MetricComputability.COMPUTABLE
+    evidence_ids: list[str] = Field(default_factory=list)
+    duration_start_event: str | None = None
+    duration_end_event: str | None = None
 
     @model_validator(mode="after")
     def validate_currency_safety(self) -> Self:
@@ -225,10 +238,19 @@ class Assumption(ContractModel):
     blocking: bool = False
 
 
+class QuestionSupportClassification(StrEnum):
+    COMPUTABLE_FROM_FEATURE = "computable_from_feature"
+    REQUIRES_EXISTING_TABLES = "requires_existing_tables"
+    REQUIRES_EXTERNAL_CONTEXT = "requires_external_context"
+    NOT_COMPUTABLE = "not_computable"
+
+
 class OpenQuestion(ContractModel):
     question: str = Field(min_length=1)
+    classification: QuestionSupportClassification
     blocking: bool = False
     context: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class AnalyticsContract(ContractModel):
@@ -249,6 +271,9 @@ class AnalyticsContract(ContractModel):
     observations: list[Observation] = Field(default_factory=list)
     assumptions: list[Assumption] = Field(default_factory=list)
     open_questions: list[OpenQuestion] = Field(default_factory=list)
+    context_version_id: UUID | None = None
+    context_content_sha256: Sha256 | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
 
     @field_validator("contract_version")
     @classmethod
@@ -283,6 +308,7 @@ class AnalyticsContract(ContractModel):
         events = {event.name for event in self.events}
         fields = {field.source_path for field in self.fields}
         dimensions = {dimension.name for dimension in self.dimensions}
+        dimension_fields = {dimension.field_path for dimension in self.dimensions}
 
         if self.primary_entity not in entities:
             raise ValueError("primary_entity must reference a declared entity")
@@ -334,6 +360,12 @@ class AnalyticsContract(ContractModel):
             if metric.currency_dimension and metric.currency_dimension not in dimensions:
                 raise ValueError(
                     f"metric {metric.name!r} references an undeclared currency dimension"
+                )
+            unknown_metric_dimensions = sorted(set(metric.dimensions) - dimension_fields)
+            if unknown_metric_dimensions:
+                raise ValueError(
+                    f"metric {metric.name!r} references undeclared dimension fields: "
+                    f"{unknown_metric_dimensions}"
                 )
         for dimension in self.dimensions:
             if dimension.field_path not in fields:

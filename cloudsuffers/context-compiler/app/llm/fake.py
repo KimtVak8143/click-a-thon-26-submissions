@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 from app.llm.provider import (
+    ProviderHealthResult,
     StructuredGenerationRequest,
     StructuredGenerationResponse,
     TokenUsage,
@@ -15,11 +16,20 @@ class FakeStructuredGenerationProvider:
         responses: Sequence[str | Exception | StructuredGenerationResponse],
         *,
         model_name: str = "fake-model",
+        health_result: ProviderHealthResult | None = None,
     ) -> None:
         self._responses = list(responses)
         self._model_name = model_name
         self.requests: list[StructuredGenerationRequest] = []
         self.closed = False
+        self.health_result = health_result or ProviderHealthResult(
+            status="ok",
+            configured=True,
+            reachable=True,
+            model=model_name,
+            model_available=True,
+            latency_ms=1,
+        )
 
     @property
     def model_name(self) -> str:
@@ -43,3 +53,6 @@ class FakeStructuredGenerationProvider:
 
     async def aclose(self) -> None:
         self.closed = True
+
+    async def health(self) -> ProviderHealthResult:
+        return self.health_result

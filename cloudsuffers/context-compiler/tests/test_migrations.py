@@ -25,6 +25,24 @@ def test_runner_applies_all_migrations_in_filename_order() -> None:
         "040_context_versions.sql",
         "050_context_issues.sql",
         "060_query_evidence.sql",
+        "070_context_sources.sql",
+        "071_context_versions_provenance.sql",
+        "072_context_entities.sql",
+        "073_context_metrics.sql",
+        "074_context_relationships.sql",
+        "075_context_changelog.sql",
     ]
-    assert len(repository.statements) == 7
-    assert all(statement.startswith("CREATE ") for statement in repository.statements)
+    assert len(repository.statements) == 13
+    assert all(statement.startswith(("CREATE ", "ALTER ")) for statement in repository.statements)
+    assert all("{metadata_database}" not in statement for statement in repository.statements)
+    assert all("compiler_meta" in statement for statement in repository.statements)
+
+
+def test_runner_uses_configured_metadata_database() -> None:
+    repository = RecordingMigrationRepository()
+    migrations_directory = Path(__file__).parents[1] / "migrations"
+
+    MigrationRunner(repository, migrations_directory, "custom_meta").run()
+
+    assert all("compiler_meta" not in statement for statement in repository.statements)
+    assert all("custom_meta" in statement for statement in repository.statements)

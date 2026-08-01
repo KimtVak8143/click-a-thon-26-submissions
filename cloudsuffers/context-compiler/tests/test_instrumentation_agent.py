@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 from contextlib import contextmanager
@@ -8,10 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.instrumentation import InstrumentationAgent
+from app.agents.instrumentation import InstrumentationAgent, feature_slug_from_spec
 from app.core.config import Settings
 from app.core.tracing import SafeLangfuseInstrumentationTracer, configure_langfuse
 from app.llm.fake import FakeStructuredGenerationProvider
+from app.llm.provider import (
+    ProviderError,
+    ProviderFailureCategory,
+    ProviderHealthResult,
+)
 from app.profiling.profiler import SourceProfiler
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -24,80 +28,59 @@ The future field future_flag is planned but may not be emitted yet.
 
 def contract_data(profile, spec: str = SPEC) -> dict:
     return {
-        "contract_version": "1.0",
         "feature": {
             "slug": "express_checkout",
             "name": "Express Checkout",
             "objective": "Measure checkout conversion",
         },
-        "source": {
-            "spec_sha256": hashlib.sha256(spec.encode()).hexdigest(),
-            "events_sha256": profile.file.sha256,
-            "row_count": profile.file.valid_row_count,
-            "observed_window": {
-                "start": profile.time_coverage.minimum.isoformat(),
-                "end": profile.time_coverage.maximum.isoformat(),
-            },
-        },
-        "grain": "one emitted feature event",
-        "primary_entity": "application",
-        "secondary_entities": [],
         "entities": [
             {
-                "name": "application",
-                "field_path": "application_id",
-                "description": "Application journey",
+                "id": "application",
+                "key_field": "application_id",
                 "role": "primary",
-                "stable": True,
+                "description": "Application journey",
+                "evidence_ids": ["source_profile"],
             }
         ],
-        "events": [
-            {
-                "name": event.event_name,
-                "description": f"Observed {event.event_name} event",
-                "entity_keys": ["application_id"],
-                "spec_only": False,
-            }
-            for event in profile.event_profile.events
-        ],
-        "fields": [
-            {
-                "name": "application_id",
-                "source_path": "application_id",
-                "semantic_type": "identifier",
-                "clickhouse_type": "String",
-                "observed_null_rate": 0.0,
-                "event_scope": [event.event_name for event in profile.event_profile.events],
-                "spec_only": False,
-            }
-        ],
+        "primary_entity_id": "application",
         "funnels": [
             {
+                "id": "checkout_funnel",
                 "name": "checkout_funnel",
-                "entity_key": "application_id",
-                "steps": [
-                    {"order": index, "event_name": event.event_name}
-                    for index, event in enumerate(profile.event_profile.events, start=1)
-                ],
+                "entity_id": "application",
+                "ordered_events": [event.event_name for event in profile.event_profile.events],
                 "ordered": True,
+                "workflow_grain": "application",
+                "attribution_window": "observed source window in event-time order",
+                "evidence_ids": ["feature_specification", "source_profile"],
             }
         ],
         "metrics": [
             {
+                "id": "checkout_conversion",
                 "name": "checkout_conversion",
                 "description": "Completed applications divided by shown applications",
                 "numerator": "count(express_payment_confirmed)",
                 "denominator": "count(express_checkout_shown)",
-                "entity_key": "application_id",
+                "entity_id": "application",
                 "aggregation_grain": "application",
-                "window": "observed source window",
+                "analysis_window": "observed source window",
                 "zero_denominator_behavior": "null",
                 "value_type": "ratio",
+                "time_attribution": "ordered event time within the observed source window",
+                "deduplication_policy": "count each application once per event stage",
+                "dimensions": ["application_id"],
+                "computability": "computable",
+                "evidence_ids": ["feature_specification", "source_profile"],
             }
         ],
-        "dimensions": [],
+        "dimensions": [
+            {
+                "field_path": "application_id",
+                "purpose": "Application-level segmentation",
+            }
+        ],
         "relationships": [],
-        "data_quality_rules": [],
         "observations": [
             {
                 "statement": "Application identifiers occur in both events.",
@@ -116,6 +99,13 @@ def profile():
 
 def encoded(value: dict) -> str:
     return json.dumps(value, default=str)
+
+
+def test_feature_slug_ignores_generic_specification_title_prefix() -> None:
+    assert feature_slug_from_spec("# Feature spec — Generic Checkout") == "generic_checkout"
+    assert feature_slug_from_spec("# Feature Specification: Generic Checkout") == (
+        "generic_checkout"
+    )
 
 
 def test_successful_generation(profile) -> None:
@@ -140,15 +130,19 @@ def test_invalid_json_repair_exhaustion(profile) -> None:
     assert result.errors[0].code == "invalid_json_type"
 
 
+def test_incomplete_json_is_reported_without_silent_truncation(profile) -> None:
+    provider = FakeStructuredGenerationProvider(['{"feature":'] * 3)
+
+    result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
+
+    assert result.validation_status == "blocked"
+    assert result.attempts == 3
+    assert result.errors[0].code == "incomplete_json"
+
+
 def test_successful_repair_receives_candidate_and_errors(profile) -> None:
     invalid = contract_data(profile)
-    invalid["events"].append(
-        {
-            "name": "invented_observed_event",
-            "description": "Invented event",
-            "entity_keys": [],
-        }
-    )
+    invalid["funnels"][0]["ordered_events"].append("invented_observed_event")
     provider = FakeStructuredGenerationProvider([encoded(invalid), encoded(contract_data(profile))])
 
     result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
@@ -164,32 +158,24 @@ def test_successful_repair_receives_candidate_and_errors(profile) -> None:
     ("mutator", "expected"),
     [
         (
-            lambda data: data["events"].append(
-                {
-                    "name": "unknown_event",
-                    "description": "Unknown",
-                    "entity_keys": [],
-                }
-            ),
-            "absent from SourceProfile",
+            lambda data: data["funnels"][0]["ordered_events"].append("unknown_event"),
+            "observed events",
         ),
         (
-            lambda data: data["fields"].append(
+            lambda data: data["dimensions"].append(
                 {
-                    "name": "invented_field",
-                    "source_path": "invented_field",
-                    "semantic_type": "string",
-                    "clickhouse_type": "String",
+                    "field_path": "invented_field",
+                    "purpose": "Invented field",
                     "spec_only": False,
                 }
             ),
-            "absent from SourceProfile",
+            "not observed",
         ),
-        (lambda data: data.update(primary_entity="missing"), "primary_entity"),
+        (lambda data: data.update(primary_entity_id="missing"), "primary_entity_id"),
         (lambda data: data["metrics"][0].pop("denominator"), "denominator"),
         (
             lambda data: data["metrics"][0].update(value_type="currency"),
-            "currency dimension or FX-normalization",
+            "currency_dimension_field or fx_normalization_rule",
         ),
     ],
 )
@@ -204,18 +190,17 @@ def test_semantic_failures_are_rejected_without_deterministic_repair(
 
     assert result.validation_status == "blocked"
     assert expected in " ".join(error.message + error.path for error in result.errors)
-    assert len(provider.requests) == 3
+    assert result.errors[0].code == "non_progressing_repair"
+    assert len(provider.requests) == 2
 
 
 def test_spec_only_field_is_preserved_and_warned(profile) -> None:
     candidate = contract_data(profile)
-    candidate["fields"].append(
+    candidate["dimensions"].append(
         {
-            "name": "future_flag",
-            "source_path": "future_flag",
+            "field_path": "future_flag",
+            "purpose": "Future feature segmentation",
             "semantic_type": "boolean",
-            "clickhouse_type": "Nullable(Bool)",
-            "observed_null_rate": None,
             "spec_only": True,
         }
     )
@@ -224,7 +209,14 @@ def test_spec_only_field_is_preserved_and_warned(profile) -> None:
     result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
 
     assert result.validation_status == "valid"
-    assert result.analytics_contract.fields[-1].spec_only is True
+    assert (
+        next(
+            field
+            for field in result.analytics_contract.fields
+            if field.source_path == "future_flag"
+        ).spec_only
+        is True
+    )
     assert "specification-only" in result.warnings[0]
 
 
@@ -252,14 +244,12 @@ def test_raw_event_values_never_appear_in_provider_messages(tmp_path: Path) -> N
         "objective": "Measure starts",
     }
     candidate["funnels"] = []
-    candidate["events"] = [
+    candidate["observations"] = [
         {
-            "name": "started",
-            "description": "Observed start",
-            "entity_keys": ["application_id"],
+            "statement": "This source contains a single event and no ordered journey.",
+            "evidence_field_paths": ["application_id"],
         }
     ]
-    candidate["fields"][0]["event_scope"] = ["started"]
     candidate["metrics"][0].update(numerator="count(started)", denominator="count(started)")
     provider = FakeStructuredGenerationProvider([encoded(candidate)])
 
@@ -341,18 +331,24 @@ def test_trace_metadata_is_safe_and_has_required_observations(profile) -> None:
     )
 
     assert result.validation_status == "valid"
-    assert {record["name"] for record in tracer.records} == {
+    assert {record["name"] for record in tracer.records} >= {
         "instrumentation_agent",
-        "contract_generation",
-        "contract_validation",
-        "contract_repair",
+        "intent_generation",
+        "intent_validation",
+        "intent_repair",
+        "contract_compilation",
+        "final_contract_validation",
+        "prompt_construction",
+        "provider_request",
+        "JSON_parsing",
+        "total_generation",
     }
     serialized_trace = json.dumps(tracer.records, default=str)
     assert secret not in serialized_trace
     assert profile.file.sha256 in serialized_trace
     assert "prompt_version" in serialized_trace
     assert "attempt_number" in serialized_trace
-    assert "latency_ms" in serialized_trace
+    assert "elapsed_ms" in serialized_trace
 
 
 class UnavailableLangfuse:
@@ -379,7 +375,7 @@ def test_provider_failure_does_not_log_secret(profile, caplog) -> None:
         result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
 
     assert result.validation_status == "blocked"
-    assert result.errors[0].code == "provider_error"
+    assert result.errors[0].code == "unknown_provider_error"
     assert secret not in caplog.text
 
 
@@ -402,3 +398,231 @@ def test_langfuse_initialization_failure_does_not_log_secret(monkeypatch, caplog
 
     assert state.status == "degraded"
     assert secret not in caplog.text
+
+
+def test_timing_logs_have_progress_and_no_sensitive_content(profile, caplog) -> None:
+    secret = "MODEL_RESPONSE_SECRET_DO_NOT_LOG"
+    invalid = encoded(contract_data(profile)) + secret
+    provider = FakeStructuredGenerationProvider([invalid, encoded(contract_data(profile))])
+
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
+
+    assert result.validation_status == "valid"
+    messages = [record.getMessage() for record in caplog.records]
+    assert "generation_started" in messages
+    assert "generation_completed" in messages
+    stages = {getattr(record, "stage", None) for record in caplog.records}
+    assert {
+        "prompt_construction",
+        "provider_request",
+        "JSON_parsing",
+        "intent_validation",
+        "intent_repair",
+        "contract_compilation",
+        "final_contract_validation",
+        "total_generation",
+    } <= stages
+    assert secret not in caplog.text
+    assert all(not hasattr(record, "prompt") for record in caplog.records)
+    assert all(not hasattr(record, "response_content") for record in caplog.records)
+
+
+def test_fake_provider_express_checkout_is_semantically_grounded_in_one_request() -> None:
+    events = FIXTURES / "express_checkout_semantic_events.ndjson"
+    source_profile = SourceProfiler().profile(events)
+    spec = """# Express Checkout
+Ordered user actions: express_checkout_shown -> express_checkout_selected -> saved_method_used \
+-> otp_entered -> express_payment_confirmed.
+
+## PM questions
+- What is checkout conversion from express_checkout_shown to express_payment_confirmed?
+- Where does OTP fail? Cut otp_success by device_type, os, and geoip_country_code.
+- How long is payment.latency_ms from express_checkout_shown to express_payment_confirmed?
+- Which segments adopt by saved_method_type?
+"""
+    candidate = contract_data(source_profile, spec)
+    candidate["funnels"][0]["ordered_events"] = [
+        "express_checkout_shown",
+        "express_checkout_selected",
+        "saved_method_used",
+        "otp_entered",
+        "express_payment_confirmed",
+    ]
+    candidate["metrics"] = [
+        {
+            **candidate["metrics"][0],
+            "id": "shown_to_confirmation_rate",
+            "name": "Shown-to-confirmation rate",
+            "description": "Confirmed applications divided by shown applications",
+            "numerator": "count(express_payment_confirmed)",
+            "denominator": "count(express_checkout_shown)",
+            "dimensions": [
+                "device_type",
+                "os",
+                "geoip_country_code",
+                "saved_method_type",
+            ],
+        },
+        {
+            **candidate["metrics"][0],
+            "id": "otp_failure_rate",
+            "name": "OTP failure rate",
+            "description": "Failed OTP submissions divided by OTP submissions",
+            "numerator": "count(otp_success = false)",
+            "denominator": "count(otp_entered)",
+            "dimensions": ["device_type", "os", "geoip_country_code"],
+        },
+        {
+            **candidate["metrics"][0],
+            "id": "payment_duration",
+            "name": "Payment duration",
+            "description": "Observed payment latency with ordered event endpoints",
+            "numerator": "avg(payment.latency_ms)",
+            "denominator": "count(express_payment_confirmed)",
+            "value_type": "duration",
+            "duration_start_event": "express_checkout_shown",
+            "duration_end_event": "express_payment_confirmed",
+            "dimensions": ["device_type", "os", "geoip_country_code"],
+        },
+    ]
+    candidate["dimensions"] = [
+        {"field_path": path, "purpose": f"Segment by {path}"}
+        for path in ("device_type", "os", "geoip_country_code", "saved_method_type")
+    ]
+    candidate["open_questions"] = [
+        {
+            "question": "Does otp_success vary by device_type, os, and geoip_country_code?",
+            "classification": "computable_from_feature",
+            "blocking": False,
+            "context": "Requires an aggregate query, not external data.",
+            "evidence_ids": ["source_profile"],
+        }
+    ]
+    provider = FakeStructuredGenerationProvider([encoded(candidate)])
+
+    result = asyncio.run(
+        InstrumentationAgent(provider).generate_contract(
+            spec,
+            source_profile,
+            context_summary='{"issues":[{"issue_code":"K1","hypothesis":true}]}',
+            context_evidence_ids=["base_context:hypothesis:K1"],
+        )
+    )
+
+    assert result.validation_status == "valid"
+    assert result.attempts == 1
+    assert len(provider.requests) == 1
+    contract = result.analytics_contract
+    assert contract.primary_entity == "application"
+    assert next(item for item in contract.entities if item.name == "application").field_path == (
+        "application_id"
+    )
+    assert contract.funnels[0].entity_key == "application_id"
+    assert [item.event_name for item in contract.funnels[0].steps] == (
+        candidate["funnels"][0]["ordered_events"]
+    )
+    assert {item.field_path for item in contract.dimensions} >= {
+        "device_type",
+        "os",
+        "geoip_country_code",
+        "saved_method_type",
+    }
+    assert any("otp_success = false" in item.numerator for item in contract.metrics)
+    assert any(
+        item.value_type.value == "duration"
+        and item.duration_start_event == "express_checkout_shown"
+        and item.duration_end_event == "express_payment_confirmed"
+        for item in contract.metrics
+    )
+    assert contract.open_questions[0].classification.value == "computable_from_feature"
+    assert contract.open_questions[0].blocking is False
+    assert "base_context:hypothesis:K1" in contract.evidence_ids
+
+
+def test_no_contract_repair_after_provider_failure(profile) -> None:
+    provider = FakeStructuredGenerationProvider(
+        [
+            ProviderError(
+                ProviderFailureCategory.CONNECTION_ERROR,
+                "Could not connect to the LLM provider",
+            ),
+            encoded(contract_data(profile)),
+        ]
+    )
+
+    result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
+
+    assert result.validation_status == "blocked"
+    assert result.errors[0].code == "connection_error"
+    assert result.attempts == 1
+    assert len(provider.requests) == 1
+
+
+class BlockingProvider:
+    model_name = "blocking-model"
+
+    def __init__(self) -> None:
+        self.requests = []
+        self.started: asyncio.Event | None = None
+        self.cancelled = False
+        self.closed = False
+
+    async def generate(self, request):
+        self.requests.append(request)
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+    async def health(self):
+        return ProviderHealthResult(
+            status="ok",
+            configured=True,
+            reachable=True,
+            model=self.model_name,
+            model_available=True,
+            latency_ms=0,
+        )
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_task_cancellation_stops_provider_and_skips_repairs(profile) -> None:
+    provider = BlockingProvider()
+
+    async def scenario() -> None:
+        provider.started = asyncio.Event()
+        task = asyncio.create_task(InstrumentationAgent(provider).generate_contract(SPEC, profile))
+        await provider.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert provider.cancelled is True
+    assert len(provider.requests) == 1
+
+
+def test_total_generation_timeout_is_structured_and_skips_repairs(profile) -> None:
+    provider = BlockingProvider()
+
+    async def scenario():
+        provider.started = asyncio.Event()
+        return await InstrumentationAgent(
+            provider,
+            total_timeout_seconds=0.01,
+        ).generate_contract(SPEC, profile)
+
+    result = asyncio.run(scenario())
+
+    assert result.validation_status == "blocked"
+    assert result.errors[0].code == "provider_timeout"
+    assert result.errors[0].path == "pipeline"
+    assert result.attempts == 1
+    assert provider.cancelled is True
+    assert len(provider.requests) == 1

@@ -13,6 +13,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_SECURE", "true")
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_USERNAME", "compiler")
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_PASSWORD", "private")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_DATABASE", "analytics")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_METADATA_DATABASE", "metadata")
     monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_EXAMPLE_LIMIT", "3")
     monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_DISTINCT_LIMIT", "250")
 
@@ -24,6 +26,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.clickhouse_port == 8443
     assert settings.clickhouse_secure is True
     assert settings.clickhouse_username == "compiler"
+    assert settings.clickhouse_database == "analytics"
+    assert settings.clickhouse_metadata_database == "metadata"
     assert settings.profile_example_limit == 3
     assert settings.profile_distinct_limit == 250
     assert settings.clickhouse_password is not None
@@ -77,3 +81,17 @@ def test_langfuse_initialization_failure_is_non_fatal(
 
     assert state.status == "degraded"
     assert state.client is None
+
+
+def test_llm_performance_settings_load_unprefixed_environment(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_STRUCTURED_OUTPUT_MODE", "json_schema")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("LLM_TEMPERATURE", "0.2")
+    monkeypatch.setenv("LLM_TOTAL_GENERATION_TIMEOUT_SECONDS", "120")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_structured_output_mode == "json_schema"
+    assert settings.llm_max_output_tokens == 4096
+    assert settings.llm_temperature == 0.2
+    assert settings.llm_total_generation_timeout_seconds == 120

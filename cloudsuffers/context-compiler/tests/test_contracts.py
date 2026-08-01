@@ -145,6 +145,7 @@ def contract_data(source_profile) -> dict:
         "open_questions": [
             {
                 "question": "Are retries emitted more than once?",
+                "classification": "not_computable",
                 "blocking": False,
             }
         ],

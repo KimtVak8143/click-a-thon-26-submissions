@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compiler_meta.context_versions
+CREATE TABLE IF NOT EXISTS {metadata_database}.context_versions
 (
     context_version_id UUID,
     parent_context_version_id Nullable(UUID),

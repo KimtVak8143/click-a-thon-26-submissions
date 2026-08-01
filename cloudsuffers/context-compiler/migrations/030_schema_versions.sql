@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compiler_meta.schema_versions
+CREATE TABLE IF NOT EXISTS {metadata_database}.schema_versions
 (
     schema_version_id UUID,
     run_id UUID,

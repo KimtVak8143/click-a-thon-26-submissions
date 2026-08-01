@@ -163,11 +163,23 @@ def contract_warnings(contract: AnalyticsContract) -> list[str]:
         if assumption.blocking
     )
     warnings.extend(
-        f"unsupported question: {question.question}"
+        f"blocking open question ({question.classification.value}): {question.question}"
         for question in contract.open_questions
         if question.blocking
     )
     return warnings
+
+
+def contains_executable_content(value: str) -> bool:
+    """Return whether untrusted semantic text contains executable instructions."""
+
+    return _EXECUTABLE.search(value) is not None
+
+
+def mentioned_in_spec(feature_spec: str, *names: str) -> bool:
+    """Return whether a source name is explicitly represented in the specification."""
+
+    return _mentioned_in_spec(feature_spec, *names)
 
 
 def _event_spec_only(contract: AnalyticsContract, event_name: str) -> bool:
@@ -268,5 +280,5 @@ def _validate_semantic_text(contract: AnalyticsContract) -> list[GroundingError]
             "semantic text must not contain SQL, code fences, or executable instructions",
         )
         for path, value in values
-        if _EXECUTABLE.search(value)
+        if contains_executable_content(value)
     ]
