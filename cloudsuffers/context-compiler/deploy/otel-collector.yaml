@@ -13,11 +13,26 @@ processors:
     limit_mib: 512
 
 exporters:
+  # Traces to Langfuse
   otlphttp/langfuse:
     endpoint: ${env:LANGFUSE_BASE_URL}/api/public/otel
     headers:
       Authorization: ${env:LANGFUSE_OTEL_AUTH_HEADER}
       x-langfuse-ingestion-version: "4"
+
+  # Metrics to ClickHouse
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_OTEL_ENDPOINT}
+    database: ${env:CLICKHOUSE_DATABASE}
+    username: ${env:CLICKHOUSE_USERNAME}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    ttl: 7d
+    timeout: 10s
+    compression: lz4
+    create_schema: true
+    async_insert: true
+
+  # Debug logging
   debug:
     verbosity: basic
 
@@ -27,3 +42,8 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlphttp/langfuse, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse, debug]

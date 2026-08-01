@@ -19,6 +19,7 @@ from app.clickhouse.repository import ClickHouseHealthRepository
 from app.context.repository import ClickHouseContextRepository, ContextRepositoryProtocol
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.metrics import configure_otel, instrument_fastapi
 from app.core.tracing import configure_langfuse, shutdown_langfuse
 from app.llm.provider import OpenAICompatibleProvider, StructuredGenerationProvider
 from app.profiling.profiler import ProfilerOptions, SourceProfiler
@@ -78,7 +79,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        # Configure OpenTelemetry (traces + metrics to ClickHouse)
+        trace_provider, meter_provider = configure_otel()
+        application.state.otel_trace_provider = trace_provider
+        application.state.otel_meter_provider = meter_provider
+        
+        # Configure Langfuse (AI observability)
         application.state.langfuse = configure_langfuse(app_settings)
+        
         logger.info(
             "application_started",
             extra={"app_env": app_settings.app_env, "version": __version__},
@@ -149,6 +157,9 @@ def create_app(
             "status": "running",
             "version": __version__,
         }
+    
+    # Instrument FastAPI with OpenTelemetry (automatic request tracing)
+    instrument_fastapi(app)
     
     return app
 
