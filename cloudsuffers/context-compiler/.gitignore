@@ -6,3 +6,9 @@ __pycache__/
 *.py[cod]
 dist/
 build/
+ui/node_modules/
+ui/.env
+ui/librechat-data/
+ui/meili-data/
+ui/uploads/
+ui/logs/
