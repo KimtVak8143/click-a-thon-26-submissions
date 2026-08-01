@@ -1,0 +1,2 @@
+{"event_id":"evt-7","event_name":"checkout_abandoned","event_time":"2026-01-04T10:00:00Z","application_id":"app-4","user_id":"user-4","drop_step":"payment"}
+{"event_id":"evt-8","event_name":"checkout_recovered","event_time":"2026-01-04T11:00:00Z","application_id":"app-4","user_id":"user-4","channel":"email"}

@@ -1,0 +1,2 @@
+{"event_id":"evt-9","event_name":"forex_addon_shown","event_time":"2026-01-05T10:00:00Z","application_id":"app-5","user_id":"user-5","destination":"US","amount":42.25,"currency":"USD"}
+{"event_id":"evt-10","event_name":"forex_addon_purchased","event_time":"2026-01-05T10:03:00Z","application_id":"app-5","user_id":"user-5","destination":"US","amount":42.25,"currency":"USD"}

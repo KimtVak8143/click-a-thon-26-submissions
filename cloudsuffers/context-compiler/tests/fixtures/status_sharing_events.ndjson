@@ -1,0 +1,2 @@
+{"event_id":"evt-5","event_name":"status_shared","event_time":"2026-01-03T10:00:00Z","share_id":"share-1","user_id":"user-3","channel":"whatsapp"}
+{"event_id":"evt-6","event_name":"status_share_opened","event_time":"2026-01-03T10:05:00Z","share_id":"share-1","recipient_type":"new_user","channel":"whatsapp"}

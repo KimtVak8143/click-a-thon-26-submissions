@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
 
+    profile_max_upload_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
+    profile_example_limit: int = Field(default=5, ge=0, le=100)
+    profile_distinct_limit: int = Field(default=10_000, ge=1, le=1_000_000)
+    profile_example_string_length: int = Field(default=128, ge=1, le=10_000)
+    profile_upload_chunk_bytes: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024)
+
     clickhouse_host: str = "localhost"
     clickhouse_port: int = Field(default=8123, ge=1, le=65535)
     clickhouse_secure: bool = False

@@ -13,6 +13,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_SECURE", "true")
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_USERNAME", "compiler")
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_PASSWORD", "private")
+    monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_EXAMPLE_LIMIT", "3")
+    monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_DISTINCT_LIMIT", "250")
 
     settings = Settings(_env_file=None)
 
@@ -22,6 +24,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.clickhouse_port == 8443
     assert settings.clickhouse_secure is True
     assert settings.clickhouse_username == "compiler"
+    assert settings.profile_example_limit == 3
+    assert settings.profile_distinct_limit == 250
     assert settings.clickhouse_password is not None
     assert settings.clickhouse_password.get_secret_value() == "private"
     assert "private" not in repr(settings)

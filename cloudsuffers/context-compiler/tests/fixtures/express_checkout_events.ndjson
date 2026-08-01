@@ -1,0 +1,2 @@
+{"event_id":"evt-1","event_name":"express_checkout_shown","event_time":"2026-01-01T10:00:00Z","application_id":"app-1","user_id":"user-1","device_type":"ios","os":"iOS","payment":{"amount":120.50,"currency":"USD"}}
+{"event_id":"evt-2","event_name":"express_payment_confirmed","event_time":"2026-01-01T10:01:00Z","application_id":"app-1","user_id":"user-1","device_type":"android","os":null,"payment":{"amount":120.50,"currency":"USD"}}

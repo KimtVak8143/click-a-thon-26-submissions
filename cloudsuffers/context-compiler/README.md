@@ -1,9 +1,10 @@
 # Context Compiler Backend
 
-Phase 0 and the initial deterministic backend foundation for Context Compiler. This service
-provides typed environment configuration, structured JSON logs, optional Langfuse setup,
-ClickHouse connectivity, metadata migrations, and health endpoints. It intentionally contains no
-agents, LLM prompts, profiling, ingestion, or analytics logic yet.
+Phase 0 and Phase 1A deterministic backend foundation for Context Compiler. This service provides
+typed environment configuration, structured JSON logs, optional Langfuse setup, ClickHouse
+connectivity, metadata migrations, health endpoints, a streaming NDJSON source profiler, and
+strict canonical analytics-contract models. It intentionally contains no agents, LLM calls, DDL
+generation, ingestion, analytics queries, or frontend code.
 
 ## Requirements
 
@@ -77,6 +78,48 @@ curl --fail http://localhost:8000/health/clickhouse
 `GET /health` checks the API process without contacting external systems. `GET
 /health/clickhouse` performs a bounded ClickHouse ping and returns HTTP `503` when unavailable.
 
+## Source profiler
+
+Profile an NDJSON file without loading the complete file into memory:
+
+```bash
+uv run python -m app.cli profile \
+  --events tests/fixtures/express_checkout_events.ndjson \
+  --output /tmp/source_profile.json
+```
+
+The profiler computes the SHA-256 while reading each line once. Example values, string lengths,
+and distinct-value digests are bounded by the `CONTEXT_COMPILER_PROFILE_*` settings in
+`.env.example`. Identifier fields never emit examples. Output arrays are sorted and the profile
+contains no generation time or input path, making identical input and settings produce stable
+JSON.
+
+The API accepts the same input as multipart form data:
+
+```bash
+curl --fail-with-body \
+  --form 'events=@tests/fixtures/express_checkout_events.ndjson;type=application/x-ndjson' \
+  http://localhost:8000/profiles
+```
+
+Uploads must have a safe `.ndjson` filename and fit the configured byte limit. They are copied in
+bounded chunks to a temporary file and always deleted after profiling. Files containing malformed
+rows receive a structured HTTP `422`; the lower-level profiler and CLI retain malformed-row counts
+in their output.
+
+## Analytics contracts
+
+Canonical contract models live in `app/contracts/models.py`. Validate proposed contract data
+against its exact source profile with:
+
+```python
+contract = AnalyticsContract.model_validate_with_profile(contract_data, source_profile)
+```
+
+This applies structural Pydantic validation and cross-model source, event, field, entity, funnel,
+metric, dimension, relationship, and currency-safety rules. Direct `model_validate` remains useful
+for structural deserialization; use `model_validate_with_profile` at the contract approval gate.
+
 ## Langfuse
 
 Langfuse is disabled by default. To configure it, set all three values in `.env`:
@@ -106,11 +149,13 @@ uv run pytest
 
 - `app/api`: FastAPI routes and dependency adapters.
 - `app/core`: Pydantic settings, JSON logging, and non-fatal Langfuse lifecycle.
+- `app/profiling`: Stable output models and the streaming NDJSON profiler.
+- `app/contracts`: Strict canonical analytics-contract models and semantic validation.
 - `app/clickhouse`: Connector construction, repositories, and migration runner.
 - `app/services`: Application-level health behavior with no connector dependency.
 - `app/models`: Typed API response models.
 - `migrations`: Ordered ClickHouse DDL, one statement per file.
-- `tests`: Configuration and health endpoint unit tests using repository test doubles.
+- `tests`: Phase 0, profiler, contract, CLI, and API tests with synthetic feature fixtures.
 
 Database calls remain behind repository interfaces. API routes depend on services, allowing unit
 tests and future orchestration code to avoid direct connector access. IDs are stored as ClickHouse
