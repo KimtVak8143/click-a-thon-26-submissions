@@ -1,0 +1,844 @@
+{
+    "run_id": "ec9c1f8e-5934-4c79-897e-cb1a54edd9d8",
+    "feature_slug": "express_checkout",
+    "status": "completed",
+    "contract": {
+        "contract_version": "1.0",
+        "feature": {
+            "slug": "express_checkout",
+            "name": "Express Checkout",
+            "objective": "A one-tap checkout for returning travellers to cut time-to-pay and lift the checkout to success conversion."
+        },
+        "source": {
+            "spec_sha256": "84a2b80f20ecd14a12043c360b88f759ed699018485395d300fb93b44f31eab4",
+            "events_sha256": "442b552ee95e339895c8dd7c4182fd699969868a8925e01614557387418b1eaa",
+            "row_count": 5507,
+            "observed_window": {
+                "start": "2026-06-08T06:00:00Z",
+                "end": "2026-06-28T23:11:00Z"
+            }
+        },
+        "grain": "one observed event record",
+        "primary_entity": "application",
+        "secondary_entities": [
+            "user"
+        ],
+        "entities": [
+            {
+                "name": "application",
+                "field_path": "application_id",
+                "description": "The application through which the express checkout is processed.",
+                "role": "primary",
+                "stable": true,
+                "evidence_ids": [
+                    "base_context:entity:application",
+                    "CTX-005"
+                ]
+            },
+            {
+                "name": "user",
+                "field_path": "user_id",
+                "description": "The user who is utilizing the express checkout feature.",
+                "role": "secondary",
+                "stable": true,
+                "evidence_ids": [
+                    "base_context:entity:user"
+                ]
+            }
+        ],
+        "events": [
+            {
+                "name": "express_checkout_selected",
+                "description": "Observed source event express_checkout_selected",
+                "entity_keys": [
+                    "application_id",
+                    "user_id"
+                ],
+                "spec_only": false
+            },
+            {
+                "name": "express_checkout_shown",
+                "description": "Observed source event express_checkout_shown",
+                "entity_keys": [
+                    "application_id",
+                    "user_id"
+                ],
+                "spec_only": false
+            },
+            {
+                "name": "express_payment_confirmed",
+                "description": "Observed source event express_payment_confirmed",
+                "entity_keys": [
+                    "application_id",
+                    "user_id"
+                ],
+                "spec_only": false
+            },
+            {
+                "name": "otp_entered",
+                "description": "Observed source event otp_entered",
+                "entity_keys": [
+                    "application_id",
+                    "user_id"
+                ],
+                "spec_only": false
+            },
+            {
+                "name": "saved_method_used",
+                "description": "Observed source event saved_method_used",
+                "entity_keys": [
+                    "application_id",
+                    "user_id"
+                ],
+                "spec_only": false
+            }
+        ],
+        "fields": [
+            {
+                "name": "app_version",
+                "source_path": "app_version",
+                "semantic_type": "string",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field app_version"
+            },
+            {
+                "name": "application_id",
+                "source_path": "application_id",
+                "semantic_type": "identifier",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field application_id"
+            },
+            {
+                "name": "city",
+                "source_path": "city",
+                "semantic_type": "string",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field city"
+            },
+            {
+                "name": "client_lib",
+                "source_path": "client_lib",
+                "semantic_type": "string",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field client_lib"
+            },
+            {
+                "name": "currency",
+                "source_path": "currency",
+                "semantic_type": "string",
+                "clickhouse_type": "Nullable(String)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_shown"
+                ],
+                "spec_only": false,
+                "description": "Observed source field currency"
+            },
+            {
+                "name": "destination",
+                "source_path": "destination",
+                "semantic_type": "string",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field destination"
+            },
+            {
+                "name": "device_type",
+                "source_path": "device_type",
+                "semantic_type": "string",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field device_type"
+            },
+            {
+                "name": "eligible",
+                "source_path": "eligible",
+                "semantic_type": "boolean",
+                "clickhouse_type": "Nullable(Bool)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_shown"
+                ],
+                "spec_only": false,
+                "description": "Observed source field eligible"
+            },
+            {
+                "name": "event",
+                "source_path": "event",
+                "semantic_type": "string",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field event"
+            },
+            {
+                "name": "geoip_country_code",
+                "source_path": "geoip_country_code",
+                "semantic_type": "country_code",
+                "clickhouse_type": "FixedString(2)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field geoip_country_code"
+            },
+            {
+                "name": "id",
+                "source_path": "id",
+                "semantic_type": "identifier",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field id"
+            },
+            {
+                "name": "os",
+                "source_path": "os",
+                "semantic_type": "string",
+                "clickhouse_type": "Nullable(String)",
+                "observed_null_rate": 0.069185,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field os"
+            },
+            {
+                "name": "otp_attempts",
+                "source_path": "otp_attempts",
+                "semantic_type": "integer",
+                "clickhouse_type": "Nullable(Int64)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "otp_entered"
+                ],
+                "spec_only": false,
+                "description": "Observed source field otp_attempts"
+            },
+            {
+                "name": "otp_success",
+                "source_path": "otp_success",
+                "semantic_type": "boolean",
+                "clickhouse_type": "Nullable(Bool)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "otp_entered"
+                ],
+                "spec_only": false,
+                "description": "Observed source field otp_success"
+            },
+            {
+                "name": "payment",
+                "source_path": "payment",
+                "semantic_type": "object",
+                "clickhouse_type": "Nullable(String)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_payment_confirmed"
+                ],
+                "spec_only": false,
+                "description": "Observed source field payment"
+            },
+            {
+                "name": "payment_amount",
+                "source_path": "payment.amount",
+                "semantic_type": "number",
+                "clickhouse_type": "Nullable(Float64)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_payment_confirmed"
+                ],
+                "spec_only": false,
+                "description": "Observed source field payment.amount"
+            },
+            {
+                "name": "payment_currency",
+                "source_path": "payment.currency",
+                "semantic_type": "string",
+                "clickhouse_type": "Nullable(String)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_payment_confirmed"
+                ],
+                "spec_only": false,
+                "description": "Observed source field payment.currency"
+            },
+            {
+                "name": "payment_latency_ms",
+                "source_path": "payment.latency_ms",
+                "semantic_type": "integer",
+                "clickhouse_type": "Nullable(Int64)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_payment_confirmed"
+                ],
+                "spec_only": false,
+                "description": "Observed source field payment.latency_ms"
+            },
+            {
+                "name": "saved_method_type",
+                "source_path": "saved_method_type",
+                "semantic_type": "string",
+                "clickhouse_type": "Nullable(String)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected"
+                ],
+                "spec_only": false,
+                "description": "Observed source field saved_method_type"
+            },
+            {
+                "name": "shown_amount",
+                "source_path": "shown_amount",
+                "semantic_type": "number",
+                "clickhouse_type": "Nullable(Float64)",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_shown"
+                ],
+                "spec_only": false,
+                "description": "Observed source field shown_amount"
+            },
+            {
+                "name": "timestamp",
+                "source_path": "timestamp",
+                "semantic_type": "datetime",
+                "clickhouse_type": "DateTime64(3, 'UTC')",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field timestamp"
+            },
+            {
+                "name": "user_id",
+                "source_path": "user_id",
+                "semantic_type": "identifier",
+                "clickhouse_type": "String",
+                "observed_null_rate": 0.0,
+                "event_scope": [
+                    "express_checkout_selected",
+                    "express_checkout_shown",
+                    "express_payment_confirmed",
+                    "otp_entered",
+                    "saved_method_used"
+                ],
+                "spec_only": false,
+                "description": "Observed source field user_id"
+            }
+        ],
+        "funnels": [
+            {
+                "name": "Express Checkout Funnel",
+                "entity_key": "application_id",
+                "steps": [
+                    {
+                        "order": 1,
+                        "event_name": "express_checkout_shown",
+                        "label": null
+                    },
+                    {
+                        "order": 2,
+                        "event_name": "express_checkout_selected",
+                        "label": null
+                    },
+                    {
+                        "order": 3,
+                        "event_name": "saved_method_used",
+                        "label": null
+                    },
+                    {
+                        "order": 4,
+                        "event_name": "otp_entered",
+                        "label": null
+                    },
+                    {
+                        "order": 5,
+                        "event_name": "express_payment_confirmed",
+                        "label": null
+                    }
+                ],
+                "ordered": true,
+                "description": null,
+                "workflow_grain": "application",
+                "attribution_window": "30d",
+                "evidence_ids": [
+                    "feature_specification"
+                ]
+            }
+        ],
+        "metrics": [
+            {
+                "name": "Pay Click Purchase Rate",
+                "description": "The rate of successful purchases after clicking the pay button.",
+                "numerator": "count(express_payment_confirmed)",
+                "denominator": "count(express_checkout_shown)",
+                "entity_key": "application_id",
+                "aggregation_grain": "application",
+                "window": "30d",
+                "zero_denominator_behavior": "null",
+                "value_type": "ratio",
+                "currency_dimension": null,
+                "fx_normalization_rule": null,
+                "time_attribution": "event_time",
+                "deduplication_policy": "latest",
+                "dimensions": [],
+                "computability": "computable",
+                "evidence_ids": [
+                    "base_context:hypothesis:K1",
+                    "CTX-005",
+                    "CTX-010"
+                ],
+                "duration_start_event": "express_checkout_shown",
+                "duration_end_event": "express_payment_confirmed"
+            },
+            {
+                "name": "Payment Latency",
+                "description": "Average time taken for payment confirmation.",
+                "numerator": "avg(payment.latency_ms)",
+                "denominator": "count(express_payment_confirmed)",
+                "entity_key": "application_id",
+                "aggregation_grain": "application",
+                "window": "30d",
+                "zero_denominator_behavior": "null",
+                "value_type": "duration",
+                "currency_dimension": null,
+                "fx_normalization_rule": null,
+                "time_attribution": "event_time",
+                "deduplication_policy": "latest",
+                "dimensions": [],
+                "computability": "computable",
+                "evidence_ids": [
+                    "feature_specification"
+                ],
+                "duration_start_event": "express_checkout_shown",
+                "duration_end_event": "express_payment_confirmed"
+            },
+            {
+                "name": "OTP Failure Rate",
+                "description": "Rate of failed OTP submissions.",
+                "numerator": "count(otp_entered where otp_success = false)",
+                "denominator": "count(otp_entered)",
+                "entity_key": "application_id",
+                "aggregation_grain": "application",
+                "window": "30d",
+                "zero_denominator_behavior": "null",
+                "value_type": "ratio",
+                "currency_dimension": null,
+                "fx_normalization_rule": null,
+                "time_attribution": "event_time",
+                "deduplication_policy": "latest",
+                "dimensions": [],
+                "computability": "computable",
+                "evidence_ids": [
+                    "feature_specification"
+                ],
+                "duration_start_event": "express_checkout_shown",
+                "duration_end_event": "express_payment_confirmed"
+            }
+        ],
+        "dimensions": [
+            {
+                "name": "device_type",
+                "field_path": "device_type",
+                "description": "Type of device used for checkout",
+                "null_handling": "keep",
+                "normalization_rules": []
+            },
+            {
+                "name": "geoip_country_code",
+                "field_path": "geoip_country_code",
+                "description": "Country code based on geo IP",
+                "null_handling": "keep",
+                "normalization_rules": []
+            },
+            {
+                "name": "os",
+                "field_path": "os",
+                "description": "Operating system of the device",
+                "null_handling": "keep",
+                "normalization_rules": []
+            },
+            {
+                "name": "saved_method_type",
+                "field_path": "saved_method_type",
+                "description": "Type of saved payment method used",
+                "null_handling": "keep",
+                "normalization_rules": []
+            }
+        ],
+        "relationships": [],
+        "data_quality_rules": [
+            {
+                "name": "profile_1_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 1650 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=1650",
+                "affected_fields": [
+                    "currency"
+                ]
+            },
+            {
+                "name": "profile_2_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 1650 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=1650",
+                "affected_fields": [
+                    "eligible"
+                ]
+            },
+            {
+                "name": "profile_3_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 1007 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=1007",
+                "affected_fields": [
+                    "otp_attempts"
+                ]
+            },
+            {
+                "name": "profile_4_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 1007 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=1007",
+                "affected_fields": [
+                    "otp_success"
+                ]
+            },
+            {
+                "name": "profile_5_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 836 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=836",
+                "affected_fields": [
+                    "payment"
+                ]
+            },
+            {
+                "name": "profile_6_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 836 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=836",
+                "affected_fields": [
+                    "payment.amount"
+                ]
+            },
+            {
+                "name": "profile_7_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 836 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=836",
+                "affected_fields": [
+                    "payment.currency"
+                ]
+            },
+            {
+                "name": "profile_8_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 836 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=836",
+                "affected_fields": [
+                    "payment.latency_ms"
+                ]
+            },
+            {
+                "name": "profile_9_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 1007 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=1007",
+                "affected_fields": [
+                    "saved_method_type"
+                ]
+            },
+            {
+                "name": "profile_10_event_scoped_field",
+                "description": "SourceProfile observed event_scoped_field in 1650 source records",
+                "severity": "info",
+                "expression": "profile_observation=event_scoped_field;count=1650",
+                "affected_fields": [
+                    "shown_amount"
+                ]
+            },
+            {
+                "name": "candidate_identifier_1_application_id",
+                "description": "Candidate identifier coverage=1.0 and uniqueness_ratio=0.299619 for declared entity application",
+                "severity": "info",
+                "expression": "coverage=1.0;uniqueness_ratio=0.299619",
+                "affected_fields": [
+                    "application_id"
+                ]
+            },
+            {
+                "name": "candidate_identifier_2_id",
+                "description": "Candidate identifier coverage=1.0 and uniqueness_ratio=1.0",
+                "severity": "info",
+                "expression": "coverage=1.0;uniqueness_ratio=1.0",
+                "affected_fields": [
+                    "id"
+                ]
+            },
+            {
+                "name": "candidate_identifier_3_user_id",
+                "description": "Candidate identifier coverage=1.0 and uniqueness_ratio=0.299619 for declared entity user",
+                "severity": "info",
+                "expression": "coverage=1.0;uniqueness_ratio=0.299619",
+                "affected_fields": [
+                    "user_id"
+                ]
+            }
+        ],
+        "observations": [
+            {
+                "statement": "SourceProfile observed event_scoped_field in 1650 source records",
+                "evidence_field_paths": [
+                    "currency"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 1650 source records",
+                "evidence_field_paths": [
+                    "eligible"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 1007 source records",
+                "evidence_field_paths": [
+                    "otp_attempts"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 1007 source records",
+                "evidence_field_paths": [
+                    "otp_success"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 836 source records",
+                "evidence_field_paths": [
+                    "payment"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 836 source records",
+                "evidence_field_paths": [
+                    "payment.amount"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 836 source records",
+                "evidence_field_paths": [
+                    "payment.currency"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 836 source records",
+                "evidence_field_paths": [
+                    "payment.latency_ms"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 1007 source records",
+                "evidence_field_paths": [
+                    "saved_method_type"
+                ]
+            },
+            {
+                "statement": "SourceProfile observed event_scoped_field in 1650 source records",
+                "evidence_field_paths": [
+                    "shown_amount"
+                ]
+            }
+        ],
+        "assumptions": [],
+        "open_questions": [
+            {
+                "question": "Does Express lift checkout to success conversion vs standard checkout, and by how much?",
+                "classification": "requires_existing_tables",
+                "blocking": false,
+                "context": null,
+                "evidence_ids": [
+                    "feature_specification"
+                ]
+            },
+            {
+                "question": "Is there a platform where OTP/payment fails more (e.g. iOS)?",
+                "classification": "computable_from_feature",
+                "blocking": false,
+                "context": null,
+                "evidence_ids": [
+                    "feature_specification"
+                ]
+            },
+            {
+                "question": "How much faster is Express (payment.latency_ms, time from shown to confirmed)?",
+                "classification": "computable_from_feature",
+                "blocking": false,
+                "context": null,
+                "evidence_ids": [
+                    "feature_specification"
+                ]
+            },
+            {
+                "question": "Which segments adopt Express most (device, geo, saved-method type)?",
+                "classification": "computable_from_feature",
+                "blocking": false,
+                "context": null,
+                "evidence_ids": [
+                    "feature_specification"
+                ]
+            }
+        ],
+        "context_version_id": "8344ade1-c63a-4453-b372-dd0d313b9329",
+        "context_content_sha256": "6412e2c98b8a352c0fc0271bc288d3260dc6d2ba2a9bfaaaa1450b582c5fb016",
+        "evidence_ids": [
+            "CTX-001",
+            "CTX-002",
+            "CTX-003",
+            "CTX-004",
+            "CTX-005",
+            "CTX-007",
+            "CTX-010",
+            "analytics_kb:v1:analysis_workflow",
+            "analytics_kb:v1:anomaly_detection",
+            "analytics_kb:v1:data_quality",
+            "analytics_kb:v1:ddl_review",
+            "analytics_kb:v1:event_envelope",
+            "analytics_kb:v1:evidence_policy",
+            "analytics_kb:v1:funnel_analysis",
+            "analytics_kb:v1:metric_formulas",
+            "analytics_kb:v1:metric_quality",
+            "analytics_kb:v1:segmentation",
+            "base_context:entity:application",
+            "base_context:entity:destination",
+            "base_context:entity:document",
+            "base_context:entity:user",
+            "base_context:event",
+            "base_context:funnel_order",
+            "base_context:hypothesis:K1",
+            "base_context:hypothesis:K2",
+            "base_context:hypothesis:K3",
+            "base_context:hypothesis:K4",
+            "base_context:hypothesis:K5",
+            "base_context:hypothesis:K6",
+            "base_context:hypothesis:K7",
+            "base_context:instrumentation_note",
+            "base_context:known_issues",
+            "base_context:metric:conversion",
+            "base_context:metric:drop_off",
+            "base_context:metric:funnel_conversion",
+            "base_context:metric:on_time_delivery",
+            "base_context:metric:passport_capture",
+            "base_context:metric:revenue",
+            "base_context:metric:revenue_per_conversion",
+            "base_context:metric:step_through",
+            "base_context:relationship:application_document",
+            "base_context:relationship:user_application",
+            "base_context:scope:post_purchase",
+            "base_context:segment_cuts",
+            "base_context:source",
+            "feature_patterns:v1:iterative_loop",
+            "feature_patterns:v1:linear_funnel",
+            "feature_patterns:v1:multi_path",
+            "feature_patterns:v1:recovery_flow",
+            "feature_patterns:v1:upsell_flow",
+            "feature_patterns:v1:viral_loop",
+            "physical_schema:application_started"
+        ]
+    },
+    "schema_plan": {
+        "strategy": "materialized_aggregate",
+        "table_name": "express_checkout_events",
+        "ddl": "CREATE TABLE IF NOT EXISTS `clickathon1`.`express_checkout_events`\n(\n    id UUID,\n    event_name LowCardinality(String),\n    timestamp DateTime64(3, 'UTC'),\n    _ingested_at DateTime64(3, 'UTC') DEFAULT now64(3),\n    app_version String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    application_id String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    city String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    client_lib String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    currency Nullable(String) -- scoped to events: express_checkout_shown,\n    destination String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    device_type String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    eligible Nullable(Bool) -- scoped to events: express_checkout_shown,\n    event String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    geoip_country_code FixedString(2) -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    os Nullable(String) -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used,\n    otp_attempts Nullable(Int64) -- scoped to events: otp_entered,\n    otp_success Nullable(Bool) -- scoped to events: otp_entered,\n    payment Nullable(String) -- scoped to events: express_payment_confirmed,\n    payment_amount Nullable(Float64) -- scoped to events: express_payment_confirmed,\n    payment_currency Nullable(String) -- scoped to events: express_payment_confirmed,\n    payment_latency_ms Nullable(Int64) -- scoped to events: express_payment_confirmed,\n    saved_method_type Nullable(String) -- scoped to events: express_checkout_selected,\n    shown_amount Nullable(Float64) -- scoped to events: express_checkout_shown,\n    user_id String -- scoped to events: express_checkout_selected, express_checkout_shown, express_payment_confirmed, otp_entered, saved_method_used\n)\nENGINE = MergeTree\nPARTITION BY toYYYYMM(timestamp)\nORDER BY (application_id, event_name, timestamp)\n\nCREATE MATERIALIZED VIEW IF NOT EXISTS `clickathon1`.`express_checkout_funnel_daily_mv`\nENGINE = AggregatingMergeTree()\nPARTITION BY toYYYYMM(date)\nORDER BY (date, event_name)\nAS SELECT\n    toDate(timestamp) AS date,\n    event_name,\n    countState(DISTINCT application_id) AS unique_entity_count\nFROM `clickathon1`.`express_checkout_events`\nGROUP BY date, event_name",
+        "deployed": false
+    },
+    "context_version_id": "1a79d94e-0729-47d5-9398-e1c82ca1311c",
+    "insights": [],
+    "errors": [
+        "recommendation observability gate unavailable",
+        "recommendation observability gate unavailable",
+        "recommendation observability gate unavailable",
+        "recommendation observability gate unavailable",
+        "recommendation observability gate unavailable"
+    ],
+    "duration_ms": 26417
+}
