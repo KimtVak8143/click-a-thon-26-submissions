@@ -22,6 +22,13 @@ cp .env.example .env
 uv sync
 ```
 
+To configure and launch the complete local stack in one command, see
+[Run the complete application](docs/RUN_APPLICATION.md) or run:
+
+```bash
+./scripts/setup-and-run.sh up
+```
+
 For a local ClickHouse instance using Docker:
 
 ```bash

@@ -1,46 +1,30 @@
-import { ChangeEvent, useCallback, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  runPipeline,
+  type AnalyticsContract,
+  type PipelineRunResponse,
+} from "./pipeline-api";
 
 type Check = { status: "loading" | "ok" | "error"; detail: string };
-type Profile = {
-  file: { sha256: string; total_line_count: number; valid_row_count: number };
-  event_profile?: { events?: Array<{ event_name: string; count: number }> };
-  fields?: unknown[];
-};
-type AnalyticsContract = {
-  feature?: { slug?: string; name?: string; objective?: string };
-  events?: unknown[];
-  fields?: unknown[];
-  metrics?: unknown[];
-  funnels?: unknown[];
-  dimensions?: unknown[];
-};
-type ContractIssue = { code?: string; message?: string; path?: string };
-type ContractResult = {
-  run_id: string;
-  source_profile: Profile;
-  analytics_contract: AnalyticsContract | null;
-  validation_status: "valid" | "blocked";
-  warnings: string[];
-  errors: ContractIssue[];
-  attempts: number;
-  context_version_id?: string | null;
-};
 
-const stages = [
-  "Spec received",
+const stageNames = [
+  "Inputs validated",
+  "Events profiled",
+  "Context resolved",
   "Contract generated",
-  "DDL validated",
-  "Data loaded",
-  "Context published",
-  "Freshness passed",
-  "Insights verified",
+  "Schema planned",
+  "Context updated",
+  "Insights generated",
 ];
 
 async function getCheck(path: string): Promise<Check> {
   try {
     const response = await fetch(`/compiler-api${path}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail ?? `HTTP ${response.status}`);
+    const data = (await response.json()) as { status?: string; detail?: unknown };
+    if (!response.ok) {
+      const detail = typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`;
+      throw new Error(detail);
+    }
     return { status: "ok", detail: data.status ?? "Connected" };
   } catch (error) {
     return { status: "error", detail: error instanceof Error ? error.message : "Unavailable" };
@@ -50,67 +34,75 @@ async function getCheck(path: string): Promise<Check> {
 export default function App() {
   const [api, setApi] = useState<Check>({ status: "loading", detail: "Checking" });
   const [clickhouse, setClickhouse] = useState<Check>({ status: "loading", detail: "Checking" });
+  const [llm, setLlm] = useState<Check>({ status: "loading", detail: "Checking" });
   const [specFile, setSpecFile] = useState<File | null>(null);
   const [eventsFile, setEventsFile] = useState<File | null>(null);
-  const [result, setResult] = useState<ContractResult | null>(null);
-  const [uploadError, setUploadError] = useState("");
-  const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState<PipelineRunResponse | null>(null);
+  const [requestError, setRequestError] = useState("");
+  const [running, setRunning] = useState(false);
+  const [dryRun, setDryRun] = useState(true);
+  const controller = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
-    const [apiCheck, clickhouseCheck] = await Promise.all([
+    const [apiCheck, clickhouseCheck, llmCheck] = await Promise.all([
       getCheck("/health"),
       getCheck("/health/clickhouse"),
+      getCheck("/health/llm"),
     ]);
     setApi(apiCheck);
     setClickhouse(clickhouseCheck);
+    setLlm(llmCheck);
   }, []);
 
   useEffect(() => void refresh(), [refresh]);
+  useEffect(() => () => controller.current?.abort(), []);
 
   const selectSpecFile = (event: ChangeEvent<HTMLInputElement>) => {
     setSpecFile(event.target.files?.[0] ?? null);
-    setResult(null);
-    setUploadError("");
+    clearResult();
   };
 
   const selectEventsFile = (event: ChangeEvent<HTMLInputElement>) => {
     setEventsFile(event.target.files?.[0] ?? null);
-    setResult(null);
-    setUploadError("");
+    clearResult();
   };
 
-  const generateContract = async () => {
+  const clearResult = () => {
+    setResult(null);
+    setRequestError("");
+  };
+
+  const startPipeline = async () => {
     if (!specFile || !eventsFile) return;
-    setGenerating(true);
-    setUploadError("");
-    const body = new FormData();
-    body.append("spec", specFile);
-    body.append("events", eventsFile);
+    const abortController = new AbortController();
+    controller.current = abortController;
+    setRunning(true);
+    setRequestError("");
+    setResult(null);
     try {
-      const response = await fetch("/compiler-api/contracts/generate", { method: "POST", body });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail?.message ?? `HTTP ${response.status}`);
-      setResult(data);
+      setResult(await runPipeline(specFile, eventsFile, dryRun, abortController.signal));
     } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Contract generation failed");
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setRequestError("Pipeline run cancelled.");
+      } else {
+        setRequestError(error instanceof Error ? error.message : "Pipeline run failed");
+      }
     } finally {
-      setGenerating(false);
+      if (controller.current === abortController) controller.current = null;
+      setRunning(false);
     }
   };
 
-  const profile = result?.source_profile ?? null;
-  const contract = result?.analytics_contract ?? null;
-  const eventTypeCount = profile?.event_profile?.events?.length ?? "-";
-  const fieldCount = profile?.fields?.length ?? "-";
+  const contract = result?.contract ?? null;
 
   return (
     <main>
       <header>
         <a className="brand" href="/">CC<span>Context Compiler</span></a>
         <nav>
-          <a href="#profile">New run</a>
+          <a href="#run">New run</a>
           <a href="#pipeline">Pipeline</a>
-          <a href="#insights">Insights</a>
+          <a href="#artifacts">Artifacts</a>
           <a className="chat" href="http://localhost:3080" target="_blank" rel="noreferrer">Open LibreChat</a>
         </nav>
       </header>
@@ -119,93 +111,175 @@ export default function App() {
         <div>
           <p className="eyebrow">FEATURE SPEC / TRUSTED INSIGHT</p>
           <h1>Compile product context.<br /><em>Verify every claim.</em></h1>
-          <p className="lede">A thin run inspector for contracts, schema decisions, context changes, and ClickHouse-backed evidence.</p>
+          <p className="lede">Run the complete compiler from a feature specification and observed events, then inspect its contract, schema plan, and evidence-backed insights.</p>
         </div>
         <div className="status-panel">
           <Status name="Backend API" check={api} />
           <Status name="ClickHouse" check={clickhouse} />
+          <Status name="LLM provider" check={llm} />
           <button className="text-button" onClick={refresh}>Refresh connections</button>
         </div>
       </section>
 
-      <section className="grid" id="profile">
+      <section className="grid" id="run">
         <article className="card upload-card">
-          <div className="section-heading"><span>01</span><div><h2>Upload feature inputs</h2><p>Use paired files from the specs folder: spec.md and events.ndjson.</p></div></div>
+          <div className="section-heading"><span>01</span><div><h2>Upload feature inputs</h2><p>Select a Markdown spec and its NDJSON event sample.</p></div></div>
           <label className="dropzone">
             <input type="file" accept=".md,.markdown,text/markdown,text/plain" onChange={selectSpecFile} />
             <small>Feature specification</small>
             <strong>{specFile ? specFile.name : "Choose spec.md"}</strong>
-            <small>{specFile ? `${(specFile.size / 1024).toFixed(1)} KB` : "Markdown describing events, questions, and goals"}</small>
+            <small>{specFile ? formatBytes(specFile.size) : "Markdown describing events, questions, and goals"}</small>
           </label>
           <label className="dropzone">
             <input type="file" accept=".ndjson,application/x-ndjson" onChange={selectEventsFile} />
             <small>Observed event sample</small>
             <strong>{eventsFile ? eventsFile.name : "Choose events.ndjson"}</strong>
-            <small>{eventsFile ? `${(eventsFile.size / 1024).toFixed(1)} KB` : "Newline-delimited JSON emitted by the feature"}</small>
+            <small>{eventsFile ? formatBytes(eventsFile.size) : "Newline-delimited JSON emitted by the feature"}</small>
           </label>
-          <button className="primary" disabled={!specFile || !eventsFile || generating || api.status !== "ok"} onClick={generateContract}>
-            {generating ? "Generating..." : "Generate contract"}
-          </button>
-          {uploadError && <p className="error">{uploadError}</p>}
+          <label className="dry-run-control">
+            <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />
+            <span><strong>Dry run</strong><small>Plan and display DDL without deploying the feature table.</small></span>
+          </label>
+          <div className="run-actions">
+            <button className="primary" disabled={!specFile || !eventsFile || running || api.status !== "ok"} onClick={startPipeline}>
+              {running ? "Running pipeline…" : "Run compiler"}
+            </button>
+            {running && <button className="secondary" onClick={() => controller.current?.abort()}>Cancel</button>}
+          </div>
+          {running && <p className="running-note">Generation is synchronous and can take several minutes. You can safely cancel this browser request.</p>}
+          {requestError && <p className="error" role="alert">{requestError}</p>}
         </article>
 
         <article className="card result-card">
-          <div className="section-heading"><span>02</span><div><h2>Contract result</h2><p>Generated from the feature spec and profiled event sample.</p></div></div>
-          {result && profile ? (
+          <div className="section-heading"><span>02</span><div><h2>Run result</h2><p>Compiler status and the most important generated metadata.</p></div></div>
+          {result ? (
             <>
-              <div className={`result-banner ${result.validation_status}`}>
-                <span>{result.validation_status}</span>
-                <strong>{contract?.feature?.name ?? contract?.feature?.slug ?? "Contract blocked"}</strong>
+              <div className={`result-banner ${statusClass(result.status)}`}>
+                <span>{result.status}</span>
+                <strong>{contract?.feature?.name ?? result.feature_slug}</strong>
                 <small>{result.run_id}</small>
               </div>
               <div className="metrics">
-                <Metric label="Valid rows" value={profile.file.valid_row_count.toLocaleString()} />
-                <Metric label="Event types" value={String(eventTypeCount)} />
-                <Metric label="Fields" value={String(fieldCount)} />
-                <Metric label="Attempts" value={String(result.attempts)} />
-                {contract && (
-                  <>
-                    <Metric label="Metrics" value={String(contract.metrics?.length ?? 0)} />
-                    <Metric label="Funnels" value={String(contract.funnels?.length ?? 0)} />
-                  </>
-                )}
-                <div className="hash"><span>Events SHA-256</span><code>{profile.file.sha256}</code></div>
+                <Metric label="Duration" value={formatDuration(result.duration_ms)} />
+                <Metric label="Entities" value={String(contract?.entities?.length ?? 0)} />
+                <Metric label="Events" value={String(contract?.events?.length ?? 0)} />
+                <Metric label="Fields" value={String(contract?.fields?.length ?? 0)} />
+                <Metric label="Metrics" value={String(contract?.metrics?.length ?? 0)} />
+                <Metric label="Insights" value={String(result.insights?.length ?? 0)} />
+                <div className="hash"><span>Context version</span><code>{result.context_version_id ?? "Not available"}</code></div>
               </div>
-              {(result.errors.length > 0 || result.warnings.length > 0) && (
+              {result.errors.length > 0 && (
                 <div className="messages">
-                  {result.errors.map((issue, index) => (
-                    <p className="error" key={`error-${index}`}>{issue.message ?? issue.code ?? "Generation error"}</p>
-                  ))}
-                  {result.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
+                  <strong>{result.status === "completed" ? "Non-fatal warnings" : "Pipeline errors"}</strong>
+                  {result.errors.map((error, index) => <p className={result.status === "completed" ? "warning" : "error"} key={`${error}-${index}`}>{error}</p>)}
                 </div>
               )}
             </>
-          ) : <Empty text="Upload spec.md and events.ndjson to generate the contract preview." />}
+          ) : <Empty text="Upload a spec and event sample to run the complete compiler in dry-run mode." />}
         </article>
       </section>
 
       <section className="card pipeline" id="pipeline">
-        <div className="section-heading"><span>03</span><div><h2>Pipeline timeline</h2><p>Ready to bind to run orchestration endpoints when they land.</p></div></div>
+        <div className="section-heading"><span>03</span><div><h2>Pipeline timeline</h2><p>{pipelineSummary(result, running)}</p></div></div>
         <div className="stage-list">
-          {stages.map((stage, index) => <div className="stage pending" key={stage}><b>{String(index + 1).padStart(2, "0")}</b><span>{stage}</span><small>Waiting for run API</small></div>)}
+          {stageNames.map((stage, index) => {
+            const state = stageState(index, result, running);
+            return <div className={`stage ${state}`} key={stage}><b>{String(index + 1).padStart(2, "0")}</b><span>{stage}</span><small>{stageLabel(state)}</small></div>;
+          })}
         </div>
       </section>
 
-      <section className="insights" id="insights">
-        <div><p className="eyebrow">ANALYTICS COPILOT</p><h2>Discuss the evidence in LibreChat</h2><p>Use LibreChat for exploration while the dashboard remains the source of truth for verified run artifacts and SQL evidence.</p></div>
-        <a className="primary link" href="http://localhost:3080" target="_blank" rel="noreferrer">Start a conversation</a>
+      <section className="artifact-section" id="artifacts">
+        <div className="section-heading"><span>04</span><div><h2>Generated artifacts</h2><p>Review compiler output as escaped text before deploying any schema.</p></div></div>
+        {contract || result?.schema_plan ? (
+          <div className="artifact-grid">
+            <article className="card artifact-card">
+              <h3>Contract summary</h3>
+              <ContractSummary contract={contract} />
+              <details><summary>Complete contract JSON</summary><pre><code>{JSON.stringify(contract, null, 2)}</code></pre></details>
+            </article>
+            <article className="card artifact-card">
+              <div className="artifact-title"><h3>ClickHouse schema plan</h3>{result?.schema_plan && <span>{result.schema_plan.deployed ? "deployed" : "dry run"}</span>}</div>
+              {result?.schema_plan ? (
+                <><p className="artifact-meta">{result.schema_plan.strategy} / {result.schema_plan.table_name}</p><pre><code>{result.schema_plan.ddl}</code></pre></>
+              ) : <Empty text="No schema plan was produced for this run." />}
+            </article>
+          </div>
+        ) : <div className="card"><Empty text="Contract JSON and generated DDL will appear here after a successful run." /></div>}
       </section>
-      <footer>Context Compiler / UI integration baseline</footer>
+
+      <section className="insights" id="insights">
+        <div className="insight-heading"><p className="eyebrow">VERIFIED INSIGHTS</p><h2>Evidence-backed analysis</h2><p>Insights are generated only after contract and schema planning complete.</p></div>
+        {result?.insights && result.insights.length > 0 ? (
+          <div className="insight-list">{result.insights.map((insight) => (
+            <article key={`${insight.category}:${insight.title}`}><span>{insight.category}</span><h3>{insight.title}</h3><p>{insight.summary}</p><small>{Math.round(insight.confidence * 100)}% confidence</small></article>
+          ))}</div>
+        ) : <p className="insight-empty">No insights available for this run.</p>}
+      </section>
+      <footer>Context Compiler / end-to-end pipeline integration</footer>
     </main>
   );
 }
 
-function Status({ name, check }: { name: string; check: Check }) {
-  return <div className="status-row"><i className={check.status} /><span><strong>{name}</strong><small>{check.detail}</small></span></div>;
+function ContractSummary({ contract }: { contract: AnalyticsContract | null }) {
+  if (!contract) return <Empty text="No validated contract was produced." />;
+  return <div className="contract-summary">
+    <p><span>Primary entity</span><strong>{contract.primary_entity ?? "—"}</strong></p>
+    <p><span>Grain</span><strong>{contract.grain ?? "—"}</strong></p>
+    {(contract.funnels ?? []).map((funnel) => <div className="funnel" key={funnel.name}>
+      <h4>{funnel.name ?? "Funnel"}<small>{funnel.workflow_grain ?? funnel.entity_key}</small></h4>
+      <ol>{(funnel.steps ?? []).map((step) => <li key={`${step.order}:${step.event_name}`}>{step.label ?? step.event_name}</li>)}</ol>
+    </div>)}
+    {(contract.metrics ?? []).length > 0 && <div className="chip-list">{contract.metrics?.map((metric) => <span key={metric.name}>{metric.name}</span>)}</div>}
+  </div>;
 }
+
+function Status({ name, check }: { name: string; check: Check }) {
+  return <div className="status-row"><i className={check.status} /><span><strong>{name}</strong><small title={check.detail}>{check.detail}</small></span></div>;
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
 }
+
 function Empty({ text }: { text: string }) {
-  return <div className="empty"><span></span><p>{text}</p></div>;
+  return <div className="empty"><span /><p>{text}</p></div>;
+}
+
+function formatBytes(bytes: number) {
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function formatDuration(milliseconds: number) {
+  return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
+}
+
+function statusClass(status: string) {
+  if (status === "completed") return "valid";
+  if (status === "contract_blocked") return "blocked";
+  return "failed";
+}
+
+function stageState(index: number, result: PipelineRunResponse | null, running: boolean) {
+  if (running) return index === 0 ? "active" : "pending";
+  if (!result) return "pending";
+  if (result.status === "completed") return "complete";
+  const completedStages = result.status === "contract_blocked" ? 3 : result.status === "error" ? 4 : 0;
+  if (index < completedStages) return "complete";
+  if (index === completedStages) return "failed";
+  return "pending";
+}
+
+function stageLabel(state: string) {
+  if (state === "complete") return "Complete";
+  if (state === "active") return "In progress";
+  if (state === "failed") return "Stopped here";
+  return "Waiting";
+}
+
+function pipelineSummary(result: PipelineRunResponse | null, running: boolean) {
+  if (running) return "The request is running; stages update when the synchronous response returns.";
+  if (!result) return "Waiting for a pipeline run.";
+  if (result.status === "completed") return "All orchestration stages completed.";
+  return `The pipeline finished with status ${result.status}.`;
 }

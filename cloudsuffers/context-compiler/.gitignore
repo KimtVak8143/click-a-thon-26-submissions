@@ -2,8 +2,10 @@
 .pytest_cache/
 .ruff_cache/
 .venv/
+.run/
 __pycache__/
 *.py[cod]
+ui/*.tsbuildinfo
 dist/
 build/
 <<<<<<< HEAD
