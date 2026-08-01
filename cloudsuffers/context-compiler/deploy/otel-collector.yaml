@@ -19,7 +19,6 @@ exporters:
     database: ${env:CLICKHOUSE_DATABASE}
     username: ${env:CLICKHOUSE_USERNAME}
     password: ${env:CLICKHOUSE_PASSWORD}
-    ttl_days: 7
     timeout: 10s
     create_schema: true
     async_insert: true
