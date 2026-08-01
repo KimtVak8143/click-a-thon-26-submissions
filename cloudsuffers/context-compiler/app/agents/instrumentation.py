@@ -119,7 +119,7 @@ class InstrumentationAgent:
         attempt_state = {"count": 0}
         started = time.perf_counter()
         initial_timing = {
-            "stage": "total_generation",
+            "stage": "contract_generation",
             "attempt_number": 1,
             "model": self._provider.model_name,
             "provider_status": "started",
@@ -127,9 +127,11 @@ class InstrumentationAgent:
         log_timing(logger, "generation_started", **initial_timing)
 
         with active_tracer.observe(
-            "total_generation",
+            "contract_generation",
             as_type="span",
+            input={"feature_slug": feature_slug, "run_id": str(active_run_id)},
             metadata={**base_metadata, **timing_metadata(**initial_timing)},
+            tags=["contract-generation"],
         ) as total_observation:
             try:
                 async with asyncio.timeout(self._total_timeout_seconds):
@@ -224,6 +226,7 @@ class InstrumentationAgent:
         with tracer.observe(
             "prompt_construction",
             as_type="span",
+            input={"feature_slug": feature_slug, "context_available": bounded_context is not None},
             metadata={
                 **base_metadata,
                 **timing_metadata(
@@ -263,7 +266,8 @@ class InstrumentationAgent:
         agent_started = time.perf_counter()
         with tracer.observe(
             "instrumentation_agent",
-            as_type="span",
+            as_type="agent",
+            input={"feature_spec": feature_spec[:500], "event_count": source_profile.file.valid_row_count},
             metadata={
                 **base_metadata,
                 **timing_metadata(
@@ -273,6 +277,7 @@ class InstrumentationAgent:
                     provider_status="started",
                 ),
             },
+            tags=["instrumentation"],
         ) as agent_observation:
             for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
                 attempt_number = attempt + 1
@@ -308,7 +313,7 @@ class InstrumentationAgent:
 
                 with tracer.observe(
                     generation_name,
-                    as_type="generation",
+                    input={"attempt": attempt_number, "schema_name": request.schema_name},
                     metadata={
                         **base_metadata,
                         **timing_metadata(
@@ -321,6 +326,8 @@ class InstrumentationAgent:
                             )
                         ),
                     },
+                    model=self._provider.model_name,
+                    tags=[generation_name, f"attempt-{attempt_number}"]
                     model=self._provider.model_name,
                 ) as generation_observation:
                     try:
@@ -754,9 +761,10 @@ class InstrumentationAgent:
                 provider_status="ok",
                 model=response.model,
             )
-            log_timing(logger, "generation_completed", **completed)
-            provider_observation.update(
+            log_output={"response_bytes": len(response.content)},
                 metadata={**base_metadata, **timing_metadata(**completed)},
+                model=response.model,
+                usagease_metadata, **timing_metadata(**completed)},
                 model=response.model,
                 usage_details=(response.usage.as_langfuse() if response.usage else None),
             )
