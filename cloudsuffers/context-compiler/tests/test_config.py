@@ -1,0 +1,119 @@
+import pytest
+from pydantic import ValidationError
+
+from app.core import tracing
+from app.core.config import Settings
+
+
+def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXT_COMPILER_APP_ENV", "test")
+    monkeypatch.setenv("CONTEXT_COMPILER_LOG_LEVEL", "debug")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_HOST", "clickhouse.internal")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_PORT", "8443")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_SECURE", "true")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_USERNAME", "compiler")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_PASSWORD", "private")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_DATABASE", "analytics")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_METADATA_DATABASE", "metadata")
+    monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_EXAMPLE_LIMIT", "3")
+    monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_DISTINCT_LIMIT", "250")
+    monkeypatch.setenv(
+        "CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS",
+        "https://frontend.example.com, http://localhost:3000/",
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.app_env == "test"
+    assert settings.log_level == "DEBUG"
+    assert settings.clickhouse_host == "clickhouse.internal"
+    assert settings.clickhouse_port == 8443
+    assert settings.clickhouse_secure is True
+    assert settings.clickhouse_username == "compiler"
+    assert settings.clickhouse_database == "analytics"
+    assert settings.clickhouse_metadata_database == "metadata"
+    assert settings.profile_example_limit == 3
+    assert settings.profile_distinct_limit == 250
+    assert settings.cors_allowed_origins == [
+        "https://frontend.example.com",
+        "http://localhost:3000",
+    ]
+    assert settings.clickhouse_password is not None
+    assert settings.clickhouse_password.get_secret_value() == "private"
+    assert "private" not in repr(settings)
+
+
+def test_empty_optional_credentials_are_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_USERNAME", "")
+    monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_PASSWORD", "")
+    monkeypatch.setenv("CONTEXT_COMPILER_LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("CONTEXT_COMPILER_LANGFUSE_SECRET_KEY", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.clickhouse_username is None
+    assert settings.clickhouse_password is None
+    assert settings.langfuse_configured is False
+
+
+def test_langfuse_requires_key_pair_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXT_COMPILER_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("CONTEXT_COMPILER_LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.delenv("CONTEXT_COMPILER_LANGFUSE_SECRET_KEY", raising=False)
+
+    with pytest.raises(ValidationError, match="both Langfuse keys"):
+        Settings(_env_file=None)
+
+
+def test_invalid_log_level_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(log_level="verbose", _env_file=None)
+
+
+def test_cors_origin_with_path_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="without paths"):
+        Settings(cors_allowed_origins=["https://frontend.example.com/app"], _env_file=None)
+
+
+def test_cors_wildcard_cannot_be_used_with_credentials() -> None:
+    with pytest.raises(ValidationError, match="wildcard allowed origin"):
+        Settings(
+            cors_allowed_origins=["*"],
+            cors_allow_credentials=True,
+            _env_file=None,
+        )
+
+
+def test_langfuse_initialization_failure_is_non_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        langfuse_enabled=True,
+        langfuse_public_key="pk-lf-test",
+        langfuse_secret_key="sk-lf-test",
+        _env_file=None,
+    )
+
+    def fail_to_initialize(**_: object) -> None:
+        raise ConnectionError("Langfuse is unavailable")
+
+    monkeypatch.setattr(tracing, "Langfuse", fail_to_initialize)
+
+    state = tracing.configure_langfuse(settings)
+
+    assert state.status == "degraded"
+    assert state.client is None
+
+
+def test_llm_performance_settings_load_unprefixed_environment(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_STRUCTURED_OUTPUT_MODE", "json_schema")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("LLM_TEMPERATURE", "0.2")
+    monkeypatch.setenv("LLM_TOTAL_GENERATION_TIMEOUT_SECONDS", "120")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_structured_output_mode == "json_schema"
+    assert settings.llm_max_output_tokens == 4096
+    assert settings.llm_temperature == 0.2
+    assert settings.llm_total_generation_timeout_seconds == 120

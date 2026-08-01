@@ -1,0 +1,5 @@
+{"id":"event-1","event_name":"express_checkout_shown","event_time":"2026-01-01T10:00:00Z","application_id":"application-1","user_id":"user-1","device_type":"mobile","os":"ios","geoip_country_code":"IN"}
+{"id":"event-2","event_name":"express_checkout_selected","event_time":"2026-01-01T10:00:10Z","application_id":"application-1","user_id":"user-1","device_type":"mobile","os":"ios","geoip_country_code":"IN","saved_method_type":"card"}
+{"id":"event-3","event_name":"saved_method_used","event_time":"2026-01-01T10:00:20Z","application_id":"application-1","user_id":"user-1","device_type":"mobile","os":"ios","geoip_country_code":"IN"}
+{"id":"event-4","event_name":"otp_entered","event_time":"2026-01-01T10:00:30Z","application_id":"application-1","user_id":"user-1","device_type":"mobile","os":"ios","geoip_country_code":"IN","otp_success":false}
+{"id":"event-5","event_name":"express_payment_confirmed","event_time":"2026-01-01T10:00:40Z","application_id":"application-1","user_id":"user-1","device_type":"mobile","os":"ios","geoip_country_code":"IN","payment":{"latency_ms":1000,"currency":"INR"}}

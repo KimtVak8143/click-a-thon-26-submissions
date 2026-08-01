@@ -1,0 +1,16 @@
+version: 1.3.13
+cache: true
+interface:
+  customWelcome: "Ask questions about Context Compiler runs and verified product insights."
+  endpointsMenu: true
+  modelSelect: true
+  parameters: true
+  presets: true
+  prompts: true
+  bookmarks: true
+  multiConvo: false
+  agents: true
+  runCode: false
+  webSearch: false
+registration:
+  socialLogins: []

@@ -1,0 +1,5 @@
+{"id":"ren-1","event_name":"checkout_widget_shown","event_time":"2026-03-03T10:00:00Z","application_id":"app-a","device_type":"mobile","os":"ios"}
+{"id":"ren-2","event_name":"checkout_widget_selected","event_time":"2026-03-03T10:00:10Z","application_id":"app-a","device_type":"mobile","os":"ios"}
+{"id":"ren-3","event_name":"stored_method_applied","event_time":"2026-03-03T10:00:20Z","application_id":"app-a","device_type":"mobile","os":"ios"}
+{"id":"ren-4","event_name":"verification_submitted","event_time":"2026-03-03T10:00:30Z","application_id":"app-a","device_type":"mobile","os":"ios","verification_ok":false}
+{"id":"ren-5","event_name":"checkout_widget_confirmed","event_time":"2026-03-03T10:00:40Z","application_id":"app-a","device_type":"mobile","os":"ios","processing_ms":950}
