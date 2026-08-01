@@ -102,7 +102,7 @@ def test_contract_generate_accepts_single_contract_intent_provider_envelope() ->
 
 
 def test_contract_generate_returns_structured_blocked_result() -> None:
-    provider = FakeStructuredGenerationProvider(["bad", "bad", "bad"])
+    provider = FakeStructuredGenerationProvider(["bad", "bad", "bad", "bad"])
 
     with build_client(provider) as client:
         response = client.post(
@@ -117,7 +117,7 @@ def test_contract_generate_returns_structured_blocked_result() -> None:
     body = response.json()
     assert body["validation_status"] == "blocked"
     assert body["analytics_contract"] is None
-    assert body["attempts"] == 3
+    assert body["attempts"] == 4
     assert body["errors"][0]["code"] == "invalid_json"
 
 

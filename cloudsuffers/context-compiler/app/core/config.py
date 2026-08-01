@@ -1,9 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     app_name: str = "Context Compiler"
     app_env: str = "development"
     log_level: str = "INFO"
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
+    cors_allow_credentials: bool = False
 
     profile_max_upload_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     profile_example_limit: int = Field(default=5, ge=0, le=100)
@@ -126,12 +131,49 @@ class Settings(BaseSettings):
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return normalized
 
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def parse_cors_allowed_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def validate_cors_allowed_origins(cls, origins: list[str]) -> list[str]:
+        if "*" in origins:
+            if len(origins) != 1:
+                raise ValueError("cors_allowed_origins cannot mix '*' with explicit origins")
+            return origins
+
+        normalized_origins: list[str] = []
+        for origin in origins:
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "cors_allowed_origins entries must be HTTP(S) origins without paths"
+                )
+            normalized = origin.rstrip("/")
+            if normalized not in normalized_origins:
+                normalized_origins.append(normalized)
+        return normalized_origins
+
     @model_validator(mode="after")
     def validate_langfuse_credentials(self) -> "Settings":
         has_public_key = self.langfuse_public_key is not None
         has_secret_key = self.langfuse_secret_key is not None
         if self.langfuse_enabled and has_public_key != has_secret_key:
             raise ValueError("both Langfuse keys are required when Langfuse is enabled")
+        if self.cors_allow_credentials and self.cors_allowed_origins == ["*"]:
+            raise ValueError(
+                "cors_allow_credentials cannot be enabled with a wildcard allowed origin"
+            )
         return self
 
     @property

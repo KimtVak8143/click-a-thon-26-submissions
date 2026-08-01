@@ -1,0 +1,4 @@
+{"event_id":"key-1","event_name":"checkout_abandoned","event_time":"2026-03-08T10:00:00Z","recovery_session_id":"session-a","drop_step":"payment"}
+{"event_id":"key-2","event_name":"checkout_recovered","event_time":"2026-03-08T11:00:00Z","recovery_session_id":"session-a","channel":"email"}
+{"event_id":"key-3","event_name":"checkout_abandoned","event_time":"2026-03-09T10:00:00Z","recovery_session_id":"session-b","drop_step":"details"}
+{"event_id":"key-4","event_name":"checkout_recovered","event_time":"2026-03-09T11:00:00Z","recovery_session_id":"session-b","channel":"push"}

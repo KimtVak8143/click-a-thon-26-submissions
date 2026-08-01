@@ -1,0 +1,4 @@
+{"event_id":"rec-1","event_name":"status_shared","event_time":"2026-03-17T10:00:00Z","share_id":"share-a","user_id":"user-a","channel":"whatsapp"}
+{"event_id":"rec-2","event_name":"status_share_opened","event_time":"2026-03-17T10:05:00Z","share_id":"share-a","recipient_type":"new_user","channel":"whatsapp"}
+{"event_id":"rec-3","event_name":"status_shared","event_time":"2026-03-18T10:00:00Z","share_id":"share-b","user_id":"user-b","channel":"email"}
+{"event_id":"rec-4","event_name":"status_share_opened","event_time":"2026-03-18T10:05:00Z","share_id":"share-b","recipient_type":"existing_user","channel":"email"}

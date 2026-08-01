@@ -38,6 +38,54 @@ def test_application_health_does_not_require_external_services() -> None:
     assert body["timestamp"].endswith("Z")
 
 
+def test_configured_frontend_origin_can_call_api() -> None:
+    settings = Settings(
+        langfuse_enabled=False,
+        cors_allowed_origins=["https://frontend.example.com"],
+        _env_file=None,
+    )
+    app = create_app(
+        settings=settings,
+        health_service=HealthService(StubClickHouseRepository()),
+    )
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/pipeline/run",
+            headers={
+                "Origin": "https://frontend.example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://frontend.example.com"
+    assert "POST" in response.headers["access-control-allow-methods"]
+    assert "Content-Type" in response.headers["access-control-allow-headers"]
+
+
+def test_unconfigured_frontend_origin_gets_no_cors_permission() -> None:
+    settings = Settings(
+        langfuse_enabled=False,
+        cors_allowed_origins=["https://frontend.example.com"],
+        _env_file=None,
+    )
+    app = create_app(
+        settings=settings,
+        health_service=HealthService(StubClickHouseRepository()),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/health",
+            headers={"Origin": "https://untrusted.example.com"},
+        )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_clickhouse_health_is_ok_when_ping_succeeds() -> None:
     with build_client(StubClickHouseRepository(result=True)) as client:
         response = client.get("/health/clickhouse")

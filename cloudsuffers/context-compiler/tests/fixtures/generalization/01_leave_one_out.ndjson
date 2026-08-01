@@ -1,0 +1,4 @@
+{"event_id":"loo-1","event_name":"group_created","event_time":"2026-03-01T10:00:00Z","group_id":"group-a","user_id":"user-a","group_size":3}
+{"event_id":"loo-2","event_name":"traveller_added","event_time":"2026-03-01T10:02:00Z","group_id":"group-a","user_id":"user-a","group_size":3,"traveller_id":"traveller-a"}
+{"event_id":"loo-3","event_name":"group_created","event_time":"2026-03-02T10:00:00Z","group_id":"group-b","user_id":"user-b","group_size":2}
+{"event_id":"loo-4","event_name":"traveller_added","event_time":"2026-03-02T10:02:00Z","group_id":"group-b","user_id":"user-b","group_size":2,"traveller_id":"traveller-b"}

@@ -120,23 +120,23 @@ def test_successful_generation(profile) -> None:
 
 
 def test_invalid_json_repair_exhaustion(profile) -> None:
-    provider = FakeStructuredGenerationProvider(["not json", "still not json", "[]"])
+    provider = FakeStructuredGenerationProvider(["not json", "still not json", "[]", "null"])
 
     result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
 
     assert result.validation_status == "blocked"
     assert result.analytics_contract is None
-    assert result.attempts == 3
+    assert result.attempts == 4
     assert result.errors[0].code == "invalid_json_type"
 
 
 def test_incomplete_json_is_reported_without_silent_truncation(profile) -> None:
-    provider = FakeStructuredGenerationProvider(['{"feature":'] * 3)
+    provider = FakeStructuredGenerationProvider(['{"feature":'] * 4)
 
     result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
 
     assert result.validation_status == "blocked"
-    assert result.attempts == 3
+    assert result.attempts == 4
     assert result.errors[0].code == "incomplete_json"
 
 
@@ -152,6 +152,60 @@ def test_successful_repair_receives_candidate_and_errors(profile) -> None:
     repair_text = provider.requests[1].messages[-1].content
     assert "invented_observed_event" in repair_text
     assert "validation_errors" in repair_text
+    assert "repair_scope_untrusted" in repair_text
+    assert '"must_correct": ["funnels.0.ordered_events"]' in repair_text
+    assert '"metrics.0"' in repair_text
+    assert "scoped replacement" in repair_text
+
+
+def test_repair_receives_source_profile_derived_metric_hints(profile) -> None:
+    spec = (
+        "# Express Checkout\nOrdered user actions: express_checkout_shown -> "
+        "express_payment_confirmed."
+    )
+    invalid = contract_data(profile)
+    invalid["metrics"][0]["numerator"] = "count(express_checkout_shown)"
+    provider = FakeStructuredGenerationProvider([encoded(invalid), encoded(contract_data(profile))])
+
+    result = asyncio.run(InstrumentationAgent(provider).generate_contract(spec, profile))
+
+    assert result.validation_status == "valid"
+    repair_text = provider.requests[1].messages[-1].content
+    assert '"error_code": "missing_conversion_metric"' in repair_text
+    assert '"grounded_numerator_example": "count(express_payment_confirmed)"' in repair_text
+    assert '"grounded_denominator_example": "count(express_checkout_shown)"' in repair_text
+
+
+def test_repair_that_modifies_preserved_value_is_rejected_then_restored(profile) -> None:
+    invalid = contract_data(profile)
+    invalid["funnels"][0]["ordered_events"].append("invented_observed_event")
+    drifted = contract_data(profile)
+    drifted["metrics"][0]["name"] = "Unrelated drift"
+    restored = contract_data(profile)
+    provider = FakeStructuredGenerationProvider(
+        [encoded(invalid), encoded(drifted), encoded(restored)]
+    )
+
+    result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
+
+    assert result.validation_status == "valid"
+    assert result.attempts == 3
+    second_repair_text = provider.requests[2].messages[-1].content
+    assert "repair_modified_unrelated_field" in second_repair_text
+    assert '"must_correct": ["metrics.0"]' in second_repair_text
+
+
+def test_repair_scope_allows_addition_only_for_array_level_missing_error(profile) -> None:
+    invalid = contract_data(profile)
+    spec = f"{SPEC}\n## PM questions\n- How does conversion vary by payment.currency?"
+    provider = FakeStructuredGenerationProvider([encoded(invalid), encoded(invalid)])
+
+    result = asyncio.run(InstrumentationAgent(provider).generate_contract(spec, profile))
+
+    assert result.validation_status == "blocked"
+    repair_text = provider.requests[1].messages[-1].content
+    assert '"must_correct": ["dimensions"]' in repair_text
+    assert '"dimensions.0"' in repair_text
 
 
 @pytest.mark.parametrize(

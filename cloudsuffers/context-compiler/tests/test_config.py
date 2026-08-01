@@ -17,6 +17,10 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("CONTEXT_COMPILER_CLICKHOUSE_METADATA_DATABASE", "metadata")
     monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_EXAMPLE_LIMIT", "3")
     monkeypatch.setenv("CONTEXT_COMPILER_PROFILE_DISTINCT_LIMIT", "250")
+    monkeypatch.setenv(
+        "CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS",
+        "https://frontend.example.com, http://localhost:3000/",
+    )
 
     settings = Settings(_env_file=None)
 
@@ -30,6 +34,10 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.clickhouse_metadata_database == "metadata"
     assert settings.profile_example_limit == 3
     assert settings.profile_distinct_limit == 250
+    assert settings.cors_allowed_origins == [
+        "https://frontend.example.com",
+        "http://localhost:3000",
+    ]
     assert settings.clickhouse_password is not None
     assert settings.clickhouse_password.get_secret_value() == "private"
     assert "private" not in repr(settings)
@@ -60,6 +68,20 @@ def test_langfuse_requires_key_pair_when_enabled(monkeypatch: pytest.MonkeyPatch
 def test_invalid_log_level_is_rejected() -> None:
     with pytest.raises(ValidationError, match="log_level"):
         Settings(log_level="verbose", _env_file=None)
+
+
+def test_cors_origin_with_path_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="without paths"):
+        Settings(cors_allowed_origins=["https://frontend.example.com/app"], _env_file=None)
+
+
+def test_cors_wildcard_cannot_be_used_with_credentials() -> None:
+    with pytest.raises(ValidationError, match="wildcard allowed origin"):
+        Settings(
+            cors_allowed_origins=["*"],
+            cors_allow_credentials=True,
+            _env_file=None,
+        )
 
 
 def test_langfuse_initialization_failure_is_non_fatal(
