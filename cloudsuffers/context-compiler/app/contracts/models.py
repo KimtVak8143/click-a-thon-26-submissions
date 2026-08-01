@@ -394,10 +394,41 @@ class AnalyticsContract(ContractModel):
                 f"contract source paths are absent from SourceProfile: {missing_paths}"
             )
 
+        incorrectly_spec_only_paths = sorted(
+            field.source_path
+            for field in self.fields
+            if field.spec_only and field.source_path in profile.field_paths
+        )
+        if incorrectly_spec_only_paths:
+            raise ValueError(
+                f"observed source paths must not be marked spec_only: {incorrectly_spec_only_paths}"
+            )
+
         declared_events = {event.name for event in self.events}
         missing_events = sorted(profile.event_names - declared_events)
         if missing_events:
             raise ValueError(f"observed events are absent from contract: {missing_events}")
+
+        invented_observed_events = sorted(
+            event.name
+            for event in self.events
+            if not event.spec_only and event.name not in profile.event_names
+        )
+        if invented_observed_events:
+            raise ValueError(
+                "contract events are absent from SourceProfile and not spec_only: "
+                f"{invented_observed_events}"
+            )
+
+        incorrectly_spec_only_events = sorted(
+            event.name
+            for event in self.events
+            if event.spec_only and event.name in profile.event_names
+        )
+        if incorrectly_spec_only_events:
+            raise ValueError(
+                f"observed events must not be marked spec_only: {incorrectly_spec_only_events}"
+            )
 
 
 def _require_unique(label: str, values: list[str]) -> None:

@@ -1,10 +1,11 @@
 # Context Compiler Backend
 
-Phase 0 and Phase 1A deterministic backend foundation for Context Compiler. This service provides
+Phase 0, Phase 1A, and Phase 2A backend foundation for Context Compiler. This service provides
 typed environment configuration, structured JSON logs, optional Langfuse setup, ClickHouse
-connectivity, metadata migrations, health endpoints, a streaming NDJSON source profiler, and
-strict canonical analytics-contract models. It intentionally contains no agents, LLM calls, DDL
-generation, ingestion, analytics queries, or frontend code.
+connectivity, metadata migrations, health endpoints, a streaming NDJSON source profiler, strict
+canonical analytics-contract models, and provider-neutral Instrumentation Agent contract
+generation. It intentionally contains no DDL generation or execution, event ingestion, Context
+Agent, Analytics Agent, or frontend code.
 
 ## Requirements
 
@@ -120,6 +121,22 @@ This applies structural Pydantic validation and cross-model source, event, field
 metric, dimension, relationship, and currency-safety rules. Direct `model_validate` remains useful
 for structural deserialization; use `model_validate_with_profile` at the contract approval gate.
 
+Generate a grounded contract from multipart Markdown and NDJSON uploads:
+
+```bash
+curl --fail-with-body \
+  --form 'spec=@feature.md;type=text/markdown' \
+  --form 'events=@events.ndjson;type=application/x-ndjson' \
+  http://localhost:8000/contracts/generate
+```
+
+Configure any OpenAI-compatible structured-output endpoint with `LLM_BASE_URL`, `LLM_API_KEY`,
+`LLM_MODEL`, `LLM_TIMEOUT_SECONDS`, and `LLM_MAX_RETRIES`. The HTTP client is initialized lazily.
+The agent sends the untrusted specification, a value-redacted aggregate source profile, the
+AnalyticsContract JSON schema, and bounded optional context. It never sends raw NDJSON rows.
+Invalid candidates are returned to the model with safe validation errors for at most two repair
+attempts; exhausted attempts return a structured blocked result.
+
 ## Langfuse
 
 Langfuse is disabled by default. To configure it, set all three values in `.env`:
@@ -148,9 +165,11 @@ uv run pytest
 ## Architecture
 
 - `app/api`: FastAPI routes and dependency adapters.
+- `app/agents`: Instrumentation Agent generation and repair orchestration.
 - `app/core`: Pydantic settings, JSON logging, and non-fatal Langfuse lifecycle.
 - `app/profiling`: Stable output models and the streaming NDJSON profiler.
 - `app/contracts`: Strict canonical analytics-contract models and semantic validation.
+- `app/llm`: Provider-neutral structured-generation protocol, OpenAI-compatible adapter, and fake.
 - `app/clickhouse`: Connector construction, repositories, and migration runner.
 - `app/services`: Application-level health behavior with no connector dependency.
 - `app/models`: Typed API response models.

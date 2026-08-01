@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
+from app.agents.instrumentation import InstrumentationAgent
+from app.api.contracts import router as contracts_router
 from app.api.health import router as health_router
 from app.api.profiles import router as profiles_router
 from app.clickhouse.client import build_clickhouse_client
@@ -11,6 +13,7 @@ from app.clickhouse.repository import ClickHouseHealthRepository
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.tracing import configure_langfuse, shutdown_langfuse
+from app.llm.provider import OpenAICompatibleProvider, StructuredGenerationProvider
 from app.profiling.profiler import ProfilerOptions, SourceProfiler
 from app.services.health import HealthService
 
@@ -19,6 +22,7 @@ def create_app(
     settings: Settings | None = None,
     health_service: HealthService | None = None,
     source_profiler: SourceProfiler | None = None,
+    structured_provider: StructuredGenerationProvider | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings.log_level)
@@ -35,6 +39,11 @@ def create_app(
             example_string_length=app_settings.profile_example_string_length,
         )
     )
+    provider = structured_provider or OpenAICompatibleProvider(app_settings)
+    instrumentation_agent = InstrumentationAgent(
+        provider,
+        context_max_chars=app_settings.contract_context_max_chars,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -47,6 +56,10 @@ def create_app(
             yield
         finally:
             repository.close()
+            try:
+                await provider.aclose()
+            except Exception:
+                logger.warning("llm_provider_shutdown_failed")
             shutdown_langfuse(application.state.langfuse)
             logger.info("application_stopped")
 
@@ -58,9 +71,11 @@ def create_app(
     app.state.settings = app_settings
     app.state.health_service = service
     app.state.source_profiler = profiler
+    app.state.instrumentation_agent = instrumentation_agent
     app.state.langfuse = None
     app.include_router(health_router)
     app.include_router(profiles_router)
+    app.include_router(contracts_router)
     return app
 
 
