@@ -1,3 +1,5 @@
+import { compilerApiUrl } from "./api-base";
+
 export interface ObservabilitySummary {
   source?: string;
   has_data?: boolean;
@@ -57,7 +59,7 @@ export interface DashboardResponse {
 }
 
 export async function getDashboard(signal?: AbortSignal): Promise<DashboardResponse> {
-  const response = await fetch("/compiler-api/dashboard", { signal });
+  const response = await fetch(compilerApiUrl("/dashboard"), { signal });
   if (!response.ok) throw new Error(`Dashboard request failed (HTTP ${response.status}).`);
   return response.json() as Promise<DashboardResponse>;
 }

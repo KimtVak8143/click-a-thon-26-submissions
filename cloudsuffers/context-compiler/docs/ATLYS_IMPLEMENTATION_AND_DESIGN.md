@@ -611,7 +611,7 @@ context-compiler/
 │   │   ├── confidence.py
 │   │   └── evidence.py
 │   └── main.py
-├── ui/
+├── ../ui/                       # independently deployed frontend
 ├── migrations/
 │   ├── 001_meta_database.sql
 │   └── 002_base_context_seed.sql
@@ -853,4 +853,3 @@ The implementation is submission-ready when:
 ## 22. Pitch summary
 
 > Context Compiler collapses the path from feature idea to trusted product insight. It reads a feature spec, observes the events that actually arrived, creates a production-ready ClickHouse model, reconciles that model with an imperfect living business context, and produces product recommendations backed by reproducible SQL. Its freshness gate prevents agents from reasoning against stale definitions, and its evidence verifier prevents the LLM from inventing numbers. When the unseen specification arrives, the exact same traced pipeline produces the schema, context diff, and insight report—without hand-written feature logic.
-

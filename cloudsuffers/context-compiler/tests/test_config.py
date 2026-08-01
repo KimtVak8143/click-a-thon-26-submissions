@@ -5,6 +5,17 @@ from app.core import tracing
 from app.core.config import Settings
 
 
+def test_default_cors_origins_support_independent_local_frontends() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.cors_allowed_origins == [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ]
+
+
 def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CONTEXT_COMPILER_APP_ENV", "test")
     monkeypatch.setenv("CONTEXT_COMPILER_LOG_LEVEL", "debug")

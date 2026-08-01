@@ -10,6 +10,7 @@ import {
   type EvaluatorScore,
   type ObservableTrace,
 } from "./dashboard-api";
+import { compilerApiUrl } from "./api-base";
 
 type Check = { status: "loading" | "ok" | "error"; detail: string };
 
@@ -26,7 +27,7 @@ const stageNames = [
 
 async function getCheck(path: string): Promise<Check> {
   try {
-    const response = await fetch(`/compiler-api${path}`);
+    const response = await fetch(compilerApiUrl(path));
     const data = (await response.json()) as { status?: string; detail?: unknown };
     if (!response.ok) {
       const detail = typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`;

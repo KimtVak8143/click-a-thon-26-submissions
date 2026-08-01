@@ -143,9 +143,9 @@ Set `CONTEXT_COMPILER_RECOMMENDATION_EVALUATOR_URL` to
 the FastAPI pipeline never publishes a recommendation when the configured boundary is
 unreachable or returns a stale/evidence/evaluation block.
 
-The frontend’s **Observability** navigation item opens the in-application Langfuse and AI-quality
-dashboard. Restart both the API and Vite process after pulling UI changes; the panel refreshes
-automatically after each compiler journey.
+The sibling `../ui` project’s **Observability** navigation item opens the in-application Langfuse
+and AI-quality dashboard. Restart both the API and frontend after pulling UI changes; the panel
+refreshes automatically after each compiler journey.
 
 Verify the service and ClickHouse separately:
 

@@ -87,17 +87,17 @@ Runtime PID and log files are stored under `.run/`. The ClickHouse container is 
 curl --fail http://127.0.0.1:8000/health
 curl --fail http://127.0.0.1:8000/health/clickhouse
 curl --fail http://127.0.0.1:8000/health/llm
-curl --fail http://127.0.0.1:5173/compiler-api/health
+curl --fail http://127.0.0.1:5173
 ```
 
-Run the documented Status Sharing case through the same proxy used by the browser:
+Run the documented Status Sharing case directly against the backend:
 
 ```bash
 curl --fail-with-body \
   --form 'spec=@tests/fixtures/generalization/10_recipient_without_user.md;type=text/markdown' \
   --form 'events=@tests/fixtures/status_sharing_events.ndjson;type=application/x-ndjson' \
   --form 'dry_run=true' \
-  http://127.0.0.1:5173/compiler-api/pipeline/run
+  http://127.0.0.1:8000/pipeline/run
 ```
 
 Keep `dry_run=true` until the generated DDL has been reviewed.
@@ -128,12 +128,12 @@ logs can be inspected with `./scripts/setup-and-run.sh logs`.
 
 ## Optional LibreChat stack
 
-LibreChat is separate from the compiler pipeline. To run it, configure secrets in `ui/.env` from
-`ui/.env.example`, then run:
+LibreChat is separate from the compiler pipeline. The frontend is the sibling project at
+`../ui`. Configure secrets in `../ui/.env` from `../ui/.env.example`, then run:
 
 ```bash
-docker compose -f ui/compose.yaml up -d --build
+docker compose -f ../ui/compose.yaml up -d --build
 ```
 
 This adds LibreChat at `http://localhost:3080` and a production dashboard at
-`http://localhost:4173`. See `ui/README.md` for the required secrets and registration flow.
+`http://localhost:4173`. See `../ui/README.md` for the required secrets and registration flow.

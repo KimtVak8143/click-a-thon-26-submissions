@@ -5,16 +5,9 @@
 .run/
 __pycache__/
 *.py[cod]
-ui/*.tsbuildinfo
 dist/
 build/
 node_modules/
-ui/node_modules/
-ui/.env
-ui/librechat-data/
-ui/meili-data/
-ui/uploads/
-ui/logs/
 phase2a1-live-response.json
 /artifacts
 .DS_Store

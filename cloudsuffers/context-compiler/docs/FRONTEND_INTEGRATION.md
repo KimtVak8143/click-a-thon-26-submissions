@@ -55,29 +55,19 @@ CONTEXT_COMPILER_CORS_ALLOW_CREDENTIALS=false
 Restart the backend after changing the environment. Keep credentials disabled unless the
 application uses cookie-based authentication. Do not use a wildcard origin in production.
 
-A same-origin proxy remains the recommended production topology and avoids environment-specific
-API URLs in frontend code.
+The frontend and backend are deployed independently. Set the frontend's API origin explicitly:
 
-For Vite, add this to `vite.config.ts`:
+```dotenv
+# Local development
+VITE_COMPILER_API_URL=http://localhost:8000
 
-```ts
-import { defineConfig } from "vite";
-
-export default defineConfig({
-  server: {
-    proxy: {
-      "/api": {
-        target: "http://127.0.0.1:8000",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
-      },
-    },
-  },
-});
+# Vercel production example
+# VITE_COMPILER_API_URL=https://context-compiler-production.up.railway.app
 ```
 
-The frontend can then call `/api/pipeline/run`. In production, configure the web server or API
-gateway to route the same path to this backend.
+The frontend calls `${VITE_COMPILER_API_URL}/pipeline/run` directly. Add the deployed Vercel
+origin to `CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS` on Railway; no Vite, Nginx, or same-origin API
+proxy is required.
 
 ## 4. Frontend request and response types
 
