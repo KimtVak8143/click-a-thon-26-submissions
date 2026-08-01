@@ -140,6 +140,16 @@ def create_app(
     app.include_router(contracts_router)
     app.include_router(pipeline_router)
     app.include_router(dashboard_router)
+    
+    @app.get("/")
+    def root() -> dict[str, str]:
+        """Root endpoint for service verification."""
+        return {
+            "service": "Context Compiler",
+            "status": "running",
+            "version": __version__,
+        }
+    
     return app
 
 
