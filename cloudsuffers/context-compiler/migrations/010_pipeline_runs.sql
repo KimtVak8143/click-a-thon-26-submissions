@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compiler_meta.pipeline_runs
+CREATE TABLE IF NOT EXISTS {metadata_database}.pipeline_runs
 (
     run_id UUID,
     feature_slug LowCardinality(String),

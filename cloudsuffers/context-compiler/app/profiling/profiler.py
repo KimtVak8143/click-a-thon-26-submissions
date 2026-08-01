@@ -10,16 +10,21 @@ from typing import Any
 
 from app.profiling.models import (
     CandidateIdentifier,
+    CanonicalDimensionCandidate,
+    CurrencyFieldProfile,
     DataQualityCode,
     DataQualityObservation,
+    DuplicateEventIdProfile,
     EventCount,
     EventProfile,
     FieldProfile,
     FileMetadata,
     JsonType,
+    NamedKeyCoverage,
     ProfilerLimits,
     SourceProfile,
     TimeCoverage,
+    TimeQualityIndicators,
 )
 
 _JSON_TYPE_ORDER = {json_type: index for index, json_type in enumerate(JsonType)}
@@ -41,6 +46,13 @@ _EXPLICIT_IDENTIFIER_NAMES = {
     "share_id",
 }
 _SENSITIVE_EXAMPLE_NAMES = {"payload", "raw_payload"}
+_CANONICAL_DIMENSIONS = {
+    "device": {"device", "device_type"},
+    "os": {"os", "operating_system"},
+    "geo": {"geo", "geo_country_code", "geoip_country_code", "country_code"},
+    "destination": {"destination", "destination_code", "destination_country_code"},
+    "app_version": {"app_version", "application_version"},
+}
 
 
 @dataclass(frozen=True)
@@ -189,6 +201,9 @@ class SourceProfiler:
         unknown_event_names = 0
         event_counts: dict[str, int] = defaultdict(int)
         fields: dict[str, _FieldAccumulator] = {}
+        previous_timestamp: datetime | None = None
+        parsed_timestamp_count = 0
+        non_monotonic_transitions = 0
 
         with path.open("rb") as source:
             for raw_line in source:
@@ -222,6 +237,10 @@ class SourceProfiler:
                 if timestamp is None:
                     invalid_timestamps += 1
                 else:
+                    parsed_timestamp_count += 1
+                    if previous_timestamp is not None and timestamp < previous_timestamp:
+                        non_monotonic_transitions += 1
+                    previous_timestamp = timestamp
                     minimum_timestamp = (
                         timestamp
                         if minimum_timestamp is None
@@ -255,6 +274,12 @@ class SourceProfiler:
             for path_key, accumulator in sorted(fields.items())
             if _is_identifier_path(path_key)
         ]
+        candidate_event_fields = sorted(
+            field_name for field_name in self.options.event_name_fields if field_name in fields
+        )
+        candidate_timestamp_fields = sorted(
+            field_name for field_name in self.options.timestamp_fields if field_name in fields
+        )
 
         return SourceProfile(
             file=FileMetadata(
@@ -284,6 +309,18 @@ class SourceProfiler:
             fields=field_profiles,
             candidate_identifiers=candidates,
             data_quality_observations=observations,
+            candidate_event_name_fields=candidate_event_fields,
+            candidate_timestamp_fields=candidate_timestamp_fields,
+            named_key_coverage=_named_key_coverage(fields, valid_rows),
+            duplicate_event_id=_duplicate_event_id(fields),
+            currency_fields=_currency_fields(fields, valid_rows),
+            canonical_dimension_candidates=_canonical_dimensions(fields, valid_rows),
+            time_quality=TimeQualityIndicators(
+                timestamp_field_candidates=candidate_timestamp_fields,
+                parsed_timestamp_count=parsed_timestamp_count,
+                non_monotonic_transition_count=non_monotonic_transitions,
+                source_order_monotonic=non_monotonic_transitions == 0,
+            ),
             limits=ProfilerLimits(
                 example_values=self.options.example_limit,
                 distinct_values=self.options.distinct_limit,
@@ -426,7 +463,86 @@ def _build_identifier(
         coverage=_ratio(accumulator.present_rows - accumulator.null_rows, valid_rows),
         uniqueness_ratio=_ratio(distinct_count, accumulator.non_null_value_count),
         uniqueness_ratio_mode="lower_bound" if accumulator.distinct_capped else "exact",
+        empty_string_count=accumulator.empty_string_count,
+        non_empty_coverage=_ratio(
+            accumulator.non_null_value_count - accumulator.empty_string_count, valid_rows
+        ),
     )
+
+
+def _named_key_coverage(
+    fields: dict[str, _FieldAccumulator], valid_rows: int
+) -> list[NamedKeyCoverage]:
+    return [
+        NamedKeyCoverage(
+            field_path=field_path,
+            presence_rate=_ratio(accumulator.present_rows, valid_rows),
+            non_null_rate=_ratio(accumulator.present_rows - accumulator.null_rows, valid_rows),
+            non_empty_rate=_ratio(
+                accumulator.non_null_value_count - accumulator.empty_string_count, valid_rows
+            ),
+        )
+        for field_path in ("application_id", "session_id", "user_id")
+        if (accumulator := fields.get(field_path)) is not None
+    ]
+
+
+def _duplicate_event_id(
+    fields: dict[str, _FieldAccumulator],
+) -> DuplicateEventIdProfile | None:
+    field_path = next((name for name in ("event_id", "id") if name in fields), None)
+    if field_path is None:
+        return None
+    accumulator = fields[field_path]
+    distinct_count = len(accumulator.distinct_hashes)
+    duplicate_lower_bound = (
+        max(accumulator.non_null_value_count - distinct_count, 0)
+        if not accumulator.distinct_capped
+        else 0
+    )
+    return DuplicateEventIdProfile(
+        field_path=field_path,
+        non_null_count=accumulator.non_null_value_count,
+        distinct_count=distinct_count,
+        duplicate_count_lower_bound=duplicate_lower_bound,
+        duplicate_rate_lower_bound=_ratio(duplicate_lower_bound, accumulator.non_null_value_count),
+        distinct_count_mode="lower_bound" if accumulator.distinct_capped else "exact",
+    )
+
+
+def _currency_fields(
+    fields: dict[str, _FieldAccumulator], valid_rows: int
+) -> list[CurrencyFieldProfile]:
+    return [
+        CurrencyFieldProfile(
+            field_path=path,
+            presence_rate=_ratio(accumulator.present_rows, valid_rows),
+            distinct_count=len(accumulator.distinct_hashes),
+            distinct_count_mode="lower_bound" if accumulator.distinct_capped else "exact",
+        )
+        for path, accumulator in sorted(fields.items())
+        if path.rsplit(".", 1)[-1].removesuffix("[]") == "currency"
+    ]
+
+
+def _canonical_dimensions(
+    fields: dict[str, _FieldAccumulator], valid_rows: int
+) -> list[CanonicalDimensionCandidate]:
+    candidates = []
+    for path, accumulator in sorted(fields.items()):
+        leaf = path.rsplit(".", 1)[-1].removesuffix("[]")
+        canonical = next(
+            (name for name, aliases in _CANONICAL_DIMENSIONS.items() if leaf in aliases), None
+        )
+        if canonical is not None:
+            candidates.append(
+                CanonicalDimensionCandidate(
+                    field_path=path,
+                    canonical_dimension=canonical,
+                    presence_rate=_ratio(accumulator.present_rows, valid_rows),
+                )
+            )
+    return candidates
 
 
 def _build_observations(
@@ -549,3 +665,6 @@ def _field_observation(
         field_path=path,
         event_names=sorted(event_names),
     )
+    (DuplicateEventIdProfile,)
+    (NamedKeyCoverage,)
+    (TimeQualityIndicators,)

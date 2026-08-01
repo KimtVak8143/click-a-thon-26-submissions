@@ -2,8 +2,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from app.api.dependencies import get_health_service
-from app.models.health import ApplicationHealth, ClickHouseHealth
+from app.api.dependencies import get_health_service, get_llm_provider
+from app.llm.provider import StructuredGenerationProvider
+from app.models.health import ApplicationHealth, ClickHouseHealth, LLMHealth
 from app.services.health import HealthService
 
 router = APIRouter(tags=["health"])
@@ -30,3 +31,18 @@ def clickhouse_health(
     if health.status != "ok":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return health
+
+
+@router.get(
+    "/health/llm",
+    response_model=LLMHealth,
+    responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": LLMHealth}},
+)
+async def llm_health(
+    response: Response,
+    provider: Annotated[StructuredGenerationProvider, Depends(get_llm_provider)],
+) -> LLMHealth:
+    result = await provider.health()
+    if result.status != "ok":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return LLMHealth(**result.model_dump())

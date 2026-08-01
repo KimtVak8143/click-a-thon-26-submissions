@@ -25,3 +25,17 @@ class ClickHouseHealth(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     latency_ms: float | None = None
     detail: str | None = None
+
+
+class LLMHealth(BaseModel):
+    status: Literal["ok", "unavailable"]
+    service: Literal["llm"] = "llm"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    configured: bool
+    reachable: bool
+    model: str
+    model_available: bool | None = None
+    latency_ms: int = Field(ge=0)
+    error_category: str | None = None
+    status_code: int | None = None
+    detail: str | None = None

@@ -1,6 +1,8 @@
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +12,7 @@ class Settings(BaseSettings):
         env_prefix="CONTEXT_COMPILER_",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "Context Compiler"
@@ -22,14 +25,76 @@ class Settings(BaseSettings):
     profile_example_string_length: int = Field(default=128, ge=1, le=10_000)
     profile_upload_chunk_bytes: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024)
 
+    contract_spec_max_upload_bytes: int = Field(default=1024 * 1024, ge=1)
+    contract_context_max_chars: int = Field(default=8_000, ge=0, le=100_000)
+
+    llm_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_BASE_URL", "CONTEXT_COMPILER_LLM_BASE_URL"),
+    )
+    llm_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "CONTEXT_COMPILER_LLM_API_KEY"),
+    )
+    llm_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_MODEL", "CONTEXT_COMPILER_LLM_MODEL"),
+    )
+    llm_timeout_seconds: float = Field(
+        default=30,
+        gt=0,
+        le=300,
+        validation_alias=AliasChoices(
+            "LLM_TIMEOUT_SECONDS", "CONTEXT_COMPILER_LLM_TIMEOUT_SECONDS"
+        ),
+    )
+    llm_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        validation_alias=AliasChoices("LLM_MAX_RETRIES", "CONTEXT_COMPILER_LLM_MAX_RETRIES"),
+    )
+    llm_structured_output_mode: Literal["json_object", "json_schema"] = Field(
+        default="json_object",
+        validation_alias=AliasChoices(
+            "LLM_STRUCTURED_OUTPUT_MODE",
+            "CONTEXT_COMPILER_LLM_STRUCTURED_OUTPUT_MODE",
+        ),
+    )
+    llm_max_output_tokens: int = Field(
+        default=2_500,
+        ge=1,
+        le=100_000,
+        validation_alias=AliasChoices(
+            "LLM_MAX_OUTPUT_TOKENS", "CONTEXT_COMPILER_LLM_MAX_OUTPUT_TOKENS"
+        ),
+    )
+    llm_temperature: float = Field(
+        default=0,
+        ge=0,
+        le=2,
+        validation_alias=AliasChoices("LLM_TEMPERATURE", "CONTEXT_COMPILER_LLM_TEMPERATURE"),
+    )
+    llm_total_generation_timeout_seconds: float = Field(
+        default=600,
+        gt=0,
+        le=3_600,
+        validation_alias=AliasChoices(
+            "LLM_TOTAL_GENERATION_TIMEOUT_SECONDS",
+            "CONTEXT_COMPILER_LLM_TOTAL_GENERATION_TIMEOUT_SECONDS",
+        ),
+    )
+
     clickhouse_host: str = "localhost"
     clickhouse_port: int = Field(default=8123, ge=1, le=65535)
     clickhouse_secure: bool = False
     clickhouse_username: str | None = None
     clickhouse_password: SecretStr | None = None
     clickhouse_database: str = "default"
+    clickhouse_metadata_database: str = "compiler_meta"
     clickhouse_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
     clickhouse_query_timeout_seconds: int = Field(default=10, ge=1, le=300)
+    base_context_path: Path = Path("docs/base_context.md")
 
     langfuse_enabled: bool = False
     langfuse_public_key: str | None = None
@@ -39,13 +104,15 @@ class Settings(BaseSettings):
     @field_validator(
         "clickhouse_username",
         "langfuse_public_key",
+        "llm_base_url",
+        "llm_model",
         mode="before",
     )
     @classmethod
     def empty_string_is_none(cls, value: object) -> object:
         return None if value == "" else value
 
-    @field_validator("clickhouse_password", "langfuse_secret_key", mode="before")
+    @field_validator("clickhouse_password", "langfuse_secret_key", "llm_api_key", mode="before")
     @classmethod
     def empty_secret_is_none(cls, value: object) -> object:
         return None if value == "" else value
@@ -70,6 +137,10 @@ class Settings(BaseSettings):
     @property
     def langfuse_configured(self) -> bool:
         return bool(self.langfuse_enabled and self.langfuse_public_key and self.langfuse_secret_key)
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
 
 
 @lru_cache

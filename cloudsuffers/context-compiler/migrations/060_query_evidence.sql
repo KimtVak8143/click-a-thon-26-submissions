@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compiler_meta.query_evidence
+CREATE TABLE IF NOT EXISTS {metadata_database}.query_evidence
 (
     evidence_id UUID,
     run_id UUID,

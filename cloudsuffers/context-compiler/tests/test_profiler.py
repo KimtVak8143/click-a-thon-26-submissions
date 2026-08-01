@@ -199,3 +199,69 @@ def test_non_finite_numbers_are_malformed_in_stable_json(tmp_path: Path) -> None
     assert profile.file.valid_row_count == 0
     assert profile.file.malformed_row_count == 1
     assert "Infinity" not in profile.stable_json()
+
+
+def test_semantic_profile_hints_are_value_redacted_and_deterministic(tmp_path: Path) -> None:
+    events = tmp_path / "semantic_hints.ndjson"
+    rows = [
+        {
+            "event_id": "secret-event-1",
+            "event_name": "started",
+            "event_time": "2026-01-01T00:01:00Z",
+            "application_id": "application-secret",
+            "session_id": "session-secret",
+            "user_id": "user-secret",
+            "device_type": "mobile",
+            "os": "test-os",
+            "geoip_country_code": "IN",
+            "destination": "US",
+            "app_version": "1.0",
+            "currency": "USD",
+        },
+        {
+            "event_id": "secret-event-1",
+            "event_name": "completed",
+            "event_time": "2026-01-01T00:00:00Z",
+            "application_id": "",
+            "session_id": "session-secret",
+            "user_id": "user-secret",
+            "device_type": "mobile",
+            "os": "test-os",
+            "geoip_country_code": "IN",
+            "destination": "US",
+            "app_version": "1.0",
+            "currency": "INR",
+        },
+    ]
+    events.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    profile = SourceProfiler().profile(events)
+    serialized = profile.stable_json()
+
+    assert profile.candidate_event_name_fields == ["event_name"]
+    assert profile.candidate_timestamp_fields == ["event_time"]
+    application = next(
+        item for item in profile.named_key_coverage if item.field_path == "application_id"
+    )
+    assert application.presence_rate == 1
+    assert application.non_empty_rate == 0.5
+    assert profile.duplicate_event_id.duplicate_count_lower_bound == 1
+    assert profile.duplicate_event_id.duplicate_rate_lower_bound == 0.5
+    assert {item.field_path for item in profile.currency_fields} == {"currency"}
+    assert profile.currency_fields[0].distinct_count == 2
+    assert {
+        (item.field_path, item.canonical_dimension)
+        for item in profile.canonical_dimension_candidates
+    } >= {
+        ("device_type", "device"),
+        ("os", "os"),
+        ("geoip_country_code", "geo"),
+        ("destination", "destination"),
+        ("app_version", "app_version"),
+    }
+    assert profile.time_quality.non_monotonic_transition_count == 1
+    assert profile.time_quality.source_order_monotonic is False
+    assert "secret-event-1" not in serialized
+    assert "application-secret" not in serialized
+    assert "session-secret" not in serialized
+    assert "user-secret" not in serialized

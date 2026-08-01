@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compiler_meta.context_issues
+CREATE TABLE IF NOT EXISTS {metadata_database}.context_issues
 (
     issue_id UUID,
     context_version_id UUID,

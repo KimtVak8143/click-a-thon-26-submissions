@@ -6,9 +6,15 @@ __pycache__/
 *.py[cod]
 dist/
 build/
+<<<<<<< HEAD
 ui/node_modules/
 ui/.env
 ui/librechat-data/
 ui/meili-data/
 ui/uploads/
 ui/logs/
+=======
+phase2a1-live-response.json
+/artifacts
+.DS_Store
+>>>>>>> fa4cb8137e61f77ec6bd9912a758c095be5ca780
