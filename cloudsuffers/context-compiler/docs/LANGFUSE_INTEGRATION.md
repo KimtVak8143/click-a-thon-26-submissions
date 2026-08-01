@@ -60,28 +60,27 @@ CONTEXT_COMPILER_LANGFUSE_BASE_URL=https://us.cloud.langfuse.com  # US
 ### Tracer Hierarchy
 
 ```
-Pipeline Run (trace_id: run_id)
+run-pipeline (chain, trace_id: run_id)
 │
-├─ contract_generation (span)
+├─ profile-source (span)
+├─ retrieve-approved-context (retriever)
+├─ total_generation (span)
 │  ├─ prompt_construction (span)
 │  ├─ instrumentation_agent (agent)
 │  │  ├─ intent_generation (generation) ← LLM call with token usage
 │  │  ├─ JSON_parsing (span)
 │  │  ├─ validation (span)
 │  │  └─ intent_repair (generation) ← Repair attempt if needed
-│  └─ provider_request (span)
 │
-├─ schema_planning (span)
-│
-├─ context_agent (agent)
-│  └─ column_introspection (span)
+├─ plan-schema (span)
+├─ update-context (agent)
 │
 └─ analytics_agent (agent)
    ├─ query_execution (span)
-   │  ├─ query_baseline_funnel (span)
-   │  ├─ query_weekly_trend_purchases (span)
-   │  ├─ query_top_segments_device_type (span)
-   │  └─ query_feature_table_ready (span)
+   │  ├─ query_baseline_funnel (tool)
+   │  ├─ query_weekly_trend_purchases (tool)
+   │  ├─ query_top_segments_device_type (tool)
+   │  └─ query_feature_table_ready (tool)
    └─ insight_generation (generation) ← LLM call with token usage
 ```
 
@@ -90,8 +89,10 @@ Pipeline Run (trace_id: run_id)
 | Type | Usage | Token Tracking | Examples |
 |------|-------|----------------|----------|
 | `agent` | Multi-step autonomous agent execution | No | InstrumentationAgent, AnalyticsAgent |
+| `chain` | End-to-end workflow orchestration | No | Pipeline run |
 | `generation` | Direct LLM API call | **Yes** | Contract generation, insight generation |
 | `span` | Supporting operation or computation | No | Parsing, validation, queries |
+| `tool` | Database/tool invocation | No | ClickHouse analytics query |
 | `retriever` | Context/data lookup (future use) | No | Context retrieval, vector search |
 
 ## Usage Patterns
@@ -113,7 +114,7 @@ tracer = SafeLangfuseInstrumentationTracer(
 with tracer.observe(
     "instrumentation_agent",
     as_type="agent",
-    input={"feature_spec": spec[:500], "event_count": row_count},
+    input={"feature_slug": feature_slug, "event_count": row_count},
     metadata={"run_id": str(run_id), "model": model_name},
     tags=["instrumentation"],
 ) as agent_obs:
@@ -142,7 +143,7 @@ with tracer.observe(
     gen_obs.update(
         output={"response_bytes": len(response.content)},
         model=response.model,
-        usage=response.usage.as_langfuse(),  # {"input": 1234, "output": 567}
+        usage_details=response.usage.as_langfuse(),  # {"input": 1234, "output": 567}
     )
 ```
 
@@ -166,13 +167,23 @@ with tracer.observe(
 
 ## Viewing Traces
 
+### Verify authenticated connectivity
+
+The regular test suite never sends telemetry. After configuring `.env`, run the opt-in live
+test to authenticate, export a development trace, flush it, and fetch it back through the API:
+
+```bash
+RUN_LANGFUSE_LIVE_TEST=1 uv run pytest -q \
+  tests/test_langfuse_integration.py::test_live_langfuse_connectivity
+```
+
 ### 1. Langfuse UI
 
 Access your traces at `https://cloud.langfuse.com` (or your self-hosted URL):
 
 - **Traces View**: See all pipeline runs
 - **Filter by Tags**: Filter by `feature:contract_generation`, `instrumentation`, etc.
-- **Session View**: Group by run_id to see complete pipeline flows
+- **Trace View**: One trace per pipeline run, correlated with `run_id` metadata
 - **Generations View**: Analyze LLM calls, tokens, and costs
 - **Agent Graph**: Visualize agent execution flow
 

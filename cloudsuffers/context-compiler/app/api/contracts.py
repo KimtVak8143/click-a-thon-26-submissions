@@ -77,7 +77,7 @@ async def generate_contract(
     langfuse_client = langfuse_state.client if langfuse_state is not None else None
     provider = request.app.state.llm_provider
     tracer = SafeLangfuseInstrumentationTracer(
-        langfuse_client, 
+        langfuse_client,
         run_id.hex,
         feature_name="contract_generation",
         tags=["api", "instrumentation-agent"],
@@ -92,7 +92,7 @@ async def generate_contract(
         with tracer.observe(
             "upload_validation",
             as_type="span",
-            input={"spec_filename": spec.filename, "events_filename": events.filename},
+            input={"spec_format": "markdown", "events_format": "ndjson"},
             metadata={
                 **api_trace_metadata,
                 "stage": "upload_validation",

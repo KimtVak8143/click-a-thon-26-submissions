@@ -4,8 +4,8 @@ Phase 0, Phase 1A, and Phase 2A backend foundation for Context Compiler. This se
 typed environment configuration, structured JSON logs, optional Langfuse setup, ClickHouse
 connectivity, metadata migrations, health endpoints, a streaming NDJSON source profiler, strict
 canonical analytics-contract models, and provider-neutral Instrumentation Agent contract
-generation. It intentionally contains no DDL generation or execution, event ingestion, Context
-Agent, Analytics Agent, or frontend code.
+generation. It also includes an OpenTelemetry-first TypeScript observability and evaluation
+subsystem that gates, scores, and persists product recommendations with complete provenance.
 
 ## Requirements
 
@@ -68,6 +68,9 @@ contains one idempotent `CREATE` or `ALTER` statement. Context metadata includes
 - `context_issues`
 - `context_changelog`
 - `query_evidence`
+- `ai_traces` and `ai_spans`
+- `ai_recommendations`, `ai_evaluations`, and `ai_judge_results`
+- `reasoning_provenance`
 
 Bootstrap the byte-exact official context after migrations:
 
@@ -125,6 +128,24 @@ CONTEXT_COMPILER_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 4. Run the API and view traces in the Langfuse dashboard
 
 For detailed documentation, see **[docs/LANGFUSE_INTEGRATION.md](docs/LANGFUSE_INTEGRATION.md)**
+and **[docs/AI_OBSERVABILITY_ARCHITECTURE.md](docs/AI_OBSERVABILITY_ARCHITECTURE.md)**.
+
+Build and run the internal TypeScript recommendation release boundary before starting the API:
+
+```bash
+npm install
+npm run build
+npm run start:observability
+```
+
+Set `CONTEXT_COMPILER_RECOMMENDATION_EVALUATOR_URL` to
+`http://127.0.0.1:4319/v1/recommendations/evaluate`. In production this setting is mandatory;
+the FastAPI pipeline never publishes a recommendation when the configured boundary is
+unreachable or returns a stale/evidence/evaluation block.
+
+The frontend’s **Observability** navigation item opens the in-application Langfuse and AI-quality
+dashboard. Restart both the API and Vite process after pulling UI changes; the panel refreshes
+automatically after each compiler journey.
 
 Verify the service and ClickHouse separately:
 
@@ -238,6 +259,10 @@ Format, lint, and run the unit tests:
 uv run ruff format .
 uv run ruff check .
 uv run pytest
+npm install
+npm run typecheck
+npm test
+npm run build
 ```
 
 ## Architecture

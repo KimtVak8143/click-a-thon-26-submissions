@@ -48,6 +48,18 @@ class DashboardStubClient:
             return Result([["CTX-002", "metric_ambiguity", "warning", "Metric ambiguity"]])
         if "context_changelog" in statement:
             return Result([["schema_added", "Added express_checkout_events", None]])
+        if "ai_recommendations" in statement and "countIf" in statement:
+            return Result([[4, 3, 0.82, 1]])
+        if "ai_evaluations" in statement:
+            return Result([["groundedness", 0.91, 0.75, 4]])
+        if "ai_recommendations" in statement:
+            return Result(
+                [["rec-1", "trace-1", "APPROVED", "Test checkout flow", 0.82, "gpt", "7", None]]
+            )
+        if "ai_traces" in statement and "avgOrNull" in statement:
+            return Result([[5, 120.0, 0.012, 900, 1]])
+        if "ai_traces" in statement:
+            return Result([["trace-1", "recommendation-lifecycle", None, 120.0, 0.002, 180, 0]])
         return Result([])
 
     def insert(self, table: str, rows: list[list[Any]], column_names: list[str]) -> None:
@@ -82,6 +94,11 @@ def test_dashboard_returns_populated_response() -> None:
     assert body["pipeline_runs"][0]["feature_slug"] == "express_checkout"
     assert body["context_issues"][0]["issue_code"] == "CTX-002"
     assert body["context_changelog"][0]["change_type"] == "schema_added"
+    assert body["observability"]["recommendation_count"] == 4
+    assert body["observability"]["approval_rate"] == 0.75
+    assert body["evaluator_scores"][0]["name"] == "groundedness"
+    assert body["recommendations"][0]["recommendation_id"] == "rec-1"
+    assert body["recent_traces"][0]["trace_id"] == "trace-1"
 
 
 def test_dashboard_returns_empty_lists_on_clickhouse_failure() -> None:
@@ -112,3 +129,6 @@ def test_dashboard_returns_empty_lists_on_clickhouse_failure() -> None:
     assert body["pipeline_runs"] == []
     assert body["context_issues"] == []
     assert body["context_changelog"] == []
+    assert body["observability"]["source"] == "Unavailable"
+    assert body["evaluator_scores"] == []
+    assert body["recent_traces"] == []
