@@ -46,6 +46,9 @@ _QUANTITATIVE_CLAIM = re.compile(
 _BOOLEAN_PREDICATE = re.compile(
     r"\b([a-z][a-z0-9_.]*)\s*(?:==|=|\bis\b)\s*(true|false)\b", re.IGNORECASE
 )
+_BOOLEAN_PREDICATE_NEQ = re.compile(r"\b([a-z][a-z0-9_.]*)\s*!=\s*(true|false)\b", re.IGNORECASE)
+_BOOLEAN_PREDICATE_NOT = re.compile(r"\bNOT\s+([a-z][a-z0-9_.]*)\b", re.IGNORECASE)
+_BOOLEAN_PREDICATE_BANG = re.compile(r"!([a-z][a-z0-9_.]*)\b")
 _DURATION_FIELD = re.compile(
     r"(?:^|[._])(?:latency|duration|elapsed|response_time|processing_time|time_to_[a-z0-9_]+)"
     r"(?:_[a-z]+)?$|(?:_ms|_millis|_milliseconds|_seconds|_secs)$",
@@ -217,6 +220,31 @@ class ContractIntent(IntentModel):
     assumptions: list[IntentAssumption] = Field(default_factory=list)
     open_questions: list[IntentOpenQuestion] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_unambiguous_entity_roles(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        primary_entity_id = value.get("primary_entity_id")
+        entities = value.get("entities")
+        if not isinstance(primary_entity_id, str) or not isinstance(entities, list):
+            return value
+        matching_indices = [
+            index
+            for index, entity in enumerate(entities)
+            if isinstance(entity, dict) and entity.get("id") == primary_entity_id
+        ]
+        if len(matching_indices) != 1:
+            return value
+        primary_index = matching_indices[0]
+        normalized_entities = [
+            {**entity, "role": "primary" if index == primary_index else "secondary"}
+            if isinstance(entity, dict)
+            else entity
+            for index, entity in enumerate(entities)
+        ]
+        return {**value, "entities": normalized_entities}
+
     @model_validator(mode="after")
     def validate_references(self) -> Self:
         _require_unique("entity id", [item.id for item in self.entities])
@@ -287,9 +315,13 @@ class SemanticContractRequirements:
     requested_dimension_paths: tuple[str, ...]
     duration_field_paths: tuple[str, ...]
     boolean_predicate_fields: tuple[str, ...]
+    requested_numeric_paths: tuple[str, ...]
+    multi_currency_paths: tuple[str, ...]
+    unsupported_question_classifications: tuple[str, ...]
     conversion_metric_required: bool
     duration_metric_required: bool
     failure_metric_required: bool
+    currency_metric_required: bool
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -305,9 +337,13 @@ class SemanticContractRequirements:
             "requested_dimension_paths": list(self.requested_dimension_paths),
             "duration_field_paths": list(self.duration_field_paths),
             "boolean_predicate_fields": list(self.boolean_predicate_fields),
+            "requested_numeric_paths": list(self.requested_numeric_paths),
+            "multi_currency_paths": list(self.multi_currency_paths),
+            "unsupported_question_classifications": list(self.unsupported_question_classifications),
             "conversion_metric_required": self.conversion_metric_required,
             "duration_metric_required": self.duration_metric_required,
             "failure_metric_required": self.failure_metric_required,
+            "currency_metric_required": self.currency_metric_required,
         }
 
 
@@ -322,6 +358,10 @@ def canonical_entity_name_for_key(field_path: str, feature_spec: str = "") -> st
             leaf = leaf[: -len(suffix)]
             break
     return leaf if _SEMANTIC_ENTITY_NAME.fullmatch(leaf) else None
+
+
+def specification_allows_event_entity(feature_spec: str) -> bool:
+    return _EVENT_ENTITY_SIGNAL.search(feature_spec) is not None
 
 
 def ordered_events_from_spec(
@@ -409,6 +449,33 @@ def semantic_contract_requirements(
             and _field_is_requested(question_text, field.path)
         )
     )
+    requested_numeric_paths = tuple(
+        sorted(
+            field.path
+            for field in source_profile.fields
+            if _field_is_requested(question_text, field.path)
+            and set(field.observed_types) - {JsonType.NULL}
+            and set(field.observed_types) - {JsonType.NULL} <= {JsonType.INTEGER, JsonType.NUMBER}
+        )
+    )
+    multi_currency_paths = tuple(
+        sorted(
+            field.field_path
+            for field in source_profile.currency_fields
+            if field.distinct_count > 1 and _field_is_requested(question_text, field.field_path)
+        )
+    )
+    unsupported_question_classifications = tuple(
+        sorted(
+            classification.value
+            for question in _pm_questions(feature_spec)
+            if (classification := classify_question_support(question, source_profile))
+            in {
+                QuestionSupportClassification.REQUIRES_EXTERNAL_CONTEXT,
+                QuestionSupportClassification.NOT_COMPUTABLE,
+            }
+        )
+    )
     speed_requested = _SPEED_SIGNAL.search(question_text) is not None
     failure_requested = _FAILURE_SIGNAL.search(question_text) is not None
     return SemanticContractRequirements(
@@ -418,9 +485,13 @@ def semantic_contract_requirements(
         requested_dimension_paths=requested_dimensions,
         duration_field_paths=duration_fields,
         boolean_predicate_fields=boolean_fields,
+        requested_numeric_paths=requested_numeric_paths,
+        multi_currency_paths=multi_currency_paths,
+        unsupported_question_classifications=unsupported_question_classifications,
         conversion_metric_required=funnel_required,
         duration_metric_required=speed_requested and bool(duration_fields),
         failure_metric_required=failure_requested and bool(boolean_fields),
+        currency_metric_required=bool(requested_numeric_paths and multi_currency_paths),
     )
 
 
@@ -479,6 +550,23 @@ def validate_intent_grounding(
 
     for index, entity in enumerate(intent.entities):
         canonical_name = canonical_entity_name_for_key(entity.key_field, feature_spec)
+        event_identity_field = (
+            source_profile.duplicate_event_id.field_path
+            if source_profile.duplicate_event_id is not None
+            else None
+        )
+        if entity.key_field == event_identity_field and not specification_allows_event_entity(
+            feature_spec
+        ):
+            errors.append(
+                IntentValidationError(
+                    "event_identity_entity_key",
+                    f"entities.{index}.key_field",
+                    "the SourceProfile-identified event identity field is row identity, not a "
+                    "business entity key; the specification must explicitly select events as "
+                    "the analytical entity",
+                )
+            )
         if entity.key_field == "id" and canonical_name is None:
             errors.append(
                 IntentValidationError(
@@ -933,8 +1021,13 @@ def _validate_metric_semantics(
         and metric.value_type == MetricValueType.RATIO
     ):
         has_true_predicate = any(value == "true" for _, value in boolean_predicates)
+        required_end_event = (
+            requirements.ordered_event_names[-1] if requirements.ordered_event_names else None
+        )
         has_success_event = any(
-            _SUCCESS_SIGNAL.search(_normalized_words(event)) for event in numerator_events
+            _SUCCESS_SIGNAL.search(_normalized_words(event))
+            or (required_end_event is not None and event == required_end_event)
+            for event in numerator_events
         )
         if not has_true_predicate and not has_success_event:
             errors.append(
@@ -1078,6 +1171,44 @@ def _validate_required_analytical_coverage(
                 f"grounded false predicate: {list(requirements.boolean_predicate_fields)}",
             )
         )
+    if requirements.currency_metric_required and not any(
+        metric.value_type == MetricValueType.CURRENCY
+        and any(
+            _references_name(metric.numerator, field)
+            for field in requirements.requested_numeric_paths
+        )
+        and (
+            metric.currency_dimension_field in requirements.multi_currency_paths
+            or bool(metric.fx_normalization_rule)
+        )
+        for metric in intent.metrics
+    ):
+        errors.append(
+            IntentValidationError(
+                "missing_requested_currency_metric",
+                "metrics",
+                "the specification asks for a monetary metric over observed numeric fields "
+                f"{list(requirements.requested_numeric_paths)} with multiple observed currencies "
+                f"{list(requirements.multi_currency_paths)}; add a currency metric grouped by "
+                "currency or with an explicit FX-normalization rule",
+            )
+        )
+    actual_question_classifications = [
+        question.classification.value for question in intent.open_questions
+    ]
+    missing_question_classifications = list(requirements.unsupported_question_classifications)
+    for classification in actual_question_classifications:
+        if classification in missing_question_classifications:
+            missing_question_classifications.remove(classification)
+    if missing_question_classifications:
+        errors.append(
+            IntentValidationError(
+                "missing_unsupported_open_question",
+                "open_questions",
+                "unsupported PM questions must be represented as open_questions with these "
+                f"deterministically derived classifications: {missing_question_classifications}",
+            )
+        )
     dimension_paths = {item.field_path for item in intent.dimensions}
     missing_dimensions = sorted(set(requirements.requested_dimension_paths) - dimension_paths)
     if missing_dimensions:
@@ -1114,11 +1245,23 @@ def _operand_is_grounded(
 
 def _valid_boolean_predicates(expression: str, boolean_fields: set[str]) -> set[tuple[str, str]]:
     # Accept event-qualified references: otp_entered.otp_success matches otp_success.
-    return {
+    predicates = {
         (_bare_name(match.group(1)), match.group(2).casefold())
         for match in _BOOLEAN_PREDICATE.finditer(expression)
         if _bare_name(match.group(1)) in boolean_fields
     }
+    predicates.update(
+        (_bare_name(match.group(1)), "false" if match.group(2).casefold() == "true" else "true")
+        for match in _BOOLEAN_PREDICATE_NEQ.finditer(expression)
+        if _bare_name(match.group(1)) in boolean_fields
+    )
+    predicates.update(
+        (_bare_name(match.group(1)), "false")
+        for pattern in (_BOOLEAN_PREDICATE_NOT, _BOOLEAN_PREDICATE_BANG)
+        for match in pattern.finditer(expression)
+        if _bare_name(match.group(1)) in boolean_fields
+    )
+    return predicates
 
 
 def _referenced_events(expression: str, events: frozenset[str]) -> set[str]:
@@ -1165,6 +1308,14 @@ def _pm_question_text(feature_spec: str) -> str:
     if start is not None:
         return "\n".join(lines[start + 1 :])
     return "\n".join(line for line in lines if "?" in line)
+
+
+def _pm_questions(feature_spec: str) -> tuple[str, ...]:
+    return tuple(
+        re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip()
+        for line in _pm_question_text(feature_spec).splitlines()
+        if "?" in line
+    )
 
 
 def _field_is_requested(text: str, field_path: str) -> bool:

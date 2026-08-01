@@ -6,6 +6,7 @@ from app.context.bootstrap import build_base_context_bundle
 from app.contracts.intent import ContractIntent
 from app.contracts.models import AnalyticsContract
 from app.contracts.prompts import (
+    _filter_context_for_profile,
     build_generation_request,
     compact_json_schema,
     compact_source_profile,
@@ -158,8 +159,105 @@ def test_prompt_uses_compact_context_projection_without_official_source_text() -
     assert "approved_context_projection_untrusted" in prompt
     assert "CTX-005" in prompt
     assert "base_context:hypothesis:K1" in prompt
+    assert "session_purchase_conversion_rate" not in prompt
+    assert "application_purchase_conversion_rate" not in prompt
     assert "700K+ applications annually" not in prompt
     assert "source_content" not in prompt
+
+
+def _make_profile(tmp_path: Path, *, field: str = "application_id") -> object:
+    events = tmp_path / "events.ndjson"
+    events.write_text(
+        json.dumps(
+            {
+                "event_name": "started",
+                "event_time": "2026-01-01T00:00:00Z",
+                field: "some-value",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return SourceProfiler().profile(events)
+
+
+def _context_json(**kwargs) -> str:
+    base = {"entities": [], "metrics": [], "issues": [], "grain_policy": "per_application"}
+    return json.dumps({**base, **kwargs}, sort_keys=True)
+
+
+def test_filter_context_keeps_grounded_entities_and_metrics(tmp_path: Path) -> None:
+    profile = _make_profile(tmp_path, field="application_id")
+    ctx = _context_json(
+        entities=[{"entity_id": "application", "key_fields": ["application_id"]}],
+        metrics=[
+            {
+                "metric_id": "starts",
+                "entity_key": "application_id",
+                "numerator": "count(started)",
+                "denominator": "count(started)",
+            }
+        ],
+    )
+    result = json.loads(_filter_context_for_profile(ctx, profile))
+    assert len(result["entities"]) == 1
+    assert result["entities"][0]["entity_id"] == "application"
+    assert len(result["metrics"]) == 1
+    assert result["metrics"][0]["metric_id"] == "starts"
+    assert "ungrounded_context_omission_counts" not in result
+
+
+def test_filter_context_removes_ungrounded_entities_and_metrics(tmp_path: Path) -> None:
+    profile = _make_profile(tmp_path, field="application_id")
+    ctx = _context_json(
+        entities=[
+            {"entity_id": "application", "key_fields": ["application_id"]},
+            {"entity_id": "session", "key_fields": ["session_id"]},
+        ],
+        metrics=[
+            {
+                "metric_id": "starts",
+                "entity_key": "application_id",
+                "numerator": "count(started)",
+            },
+            {
+                "metric_id": "session_conversion_rate",
+                "entity_key": "session_id",
+                "numerator": "count(purchase_completed)",
+            },
+        ],
+    )
+    result = json.loads(_filter_context_for_profile(ctx, profile))
+    assert [e["entity_id"] for e in result["entities"]] == ["application"]
+    assert [m["metric_id"] for m in result["metrics"]] == ["starts"]
+    assert result["ungrounded_context_omission_counts"] == {
+        "entities": 1,
+        "events": 0,
+        "metrics": 1,
+        "relationships": 0,
+    }
+
+
+def test_filter_context_preserves_passthrough_keys(tmp_path: Path) -> None:
+    profile = _make_profile(tmp_path, field="application_id")
+    ctx = _context_json(
+        issues=["some data quality issue"],
+        canonical_funnel=["step_a", "step_b"],
+        source_precedence=["clickstream"],
+    )
+    result = json.loads(_filter_context_for_profile(ctx, profile))
+    assert result["issues"] == ["some data quality issue"]
+    assert result["canonical_funnel"] == []
+    assert result["ungrounded_context_omission_counts"]["events"] == 2
+    assert result["source_precedence"] == ["clickstream"]
+    assert result["grain_policy"] == "per_application"
+
+
+def test_filter_context_handles_invalid_json_and_none_gracefully(tmp_path: Path) -> None:
+    profile = _make_profile(tmp_path)
+    assert _filter_context_for_profile(None, profile) is None
+    malformed = "{not valid json"
+    assert _filter_context_for_profile(malformed, profile) == malformed
 
 
 def _assert_schema_preserved(

@@ -10,7 +10,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.contracts.compiler import compile_contract_payload
-from app.contracts.intent import ContractIntent, validate_intent_grounding
+from app.contracts.intent import (
+    ContractIntent,
+    semantic_contract_requirements,
+    validate_intent_grounding,
+)
 from app.contracts.models import AnalyticsContract
 from app.contracts.prompts import (
     PROMPT_VERSION,
@@ -31,7 +35,19 @@ from app.llm.provider import (
 from app.profiling.models import SourceProfile
 
 logger = get_logger(__name__)
-MAX_REPAIR_ATTEMPTS = 2
+MAX_REPAIR_ATTEMPTS = 3
+
+_REPAIR_ARRAY_FIELDS = (
+    "entities",
+    "funnels",
+    "metrics",
+    "dimensions",
+    "relationships",
+    "observations",
+    "assumptions",
+    "open_questions",
+)
+_REPAIR_SCALAR_FIELDS = ("feature", "primary_entity_id", "grain")
 
 
 class AgentModel(BaseModel):
@@ -266,10 +282,14 @@ class InstrumentationAgent:
                 generation_name = "intent_generation"
                 envelope_metadata: dict[str, Any] = {}
                 repeated_error_signature = False
+                repair_scope: dict[str, Any] | None = None
+                repair_source_candidate: dict[str, Any] | None = None
                 if attempt:
                     if not candidate_received:
                         break
                     generation_name = "intent_repair"
+                    repair_source_candidate = parsed_candidate
+                    repair_scope = _build_repair_scope(parsed_candidate, validation_errors)
                     request = build_repair_request(
                         initial_request,
                         invalid_candidate=invalid_candidate,
@@ -277,6 +297,12 @@ class InstrumentationAgent:
                         allowed_observed_events=sorted(source_profile.event_names),
                         allowed_field_paths=sorted(source_profile.field_paths),
                         allowed_declared_entity_ids=_declared_entity_ids(parsed_candidate),
+                        repair_scope=repair_scope,
+                        deterministic_repair_hints=_build_deterministic_repair_hints(
+                            validation_errors,
+                            source_profile,
+                            feature_spec,
+                        ),
                         attempt_number=attempt_number,
                     )
 
@@ -471,6 +497,13 @@ class InstrumentationAgent:
                             base_metadata=base_metadata,
                             envelope_metadata=envelope_metadata,
                         )
+                        if attempt and repair_scope is not None:
+                            preservation_errors = _repair_preservation_errors(
+                                repair_source_candidate, parsed_candidate, repair_scope
+                            )
+                            if preservation_errors:
+                                intent = None
+                                validation_errors.extend(preservation_errors)
                         if intent is None and validation_errors:
                             error_signature = _normalized_error_signature(validation_errors)
                             envelope_metadata["semantic_error_signature"] = error_signature
@@ -1102,6 +1135,196 @@ def _declared_entity_ids(value: dict[str, Any] | None) -> list[str]:
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         }
     )
+
+
+def _build_repair_scope(
+    value: dict[str, Any] | None,
+    errors: list[ContractValidationIssue],
+) -> dict[str, Any]:
+    must_correct = list(dict.fromkeys(item.path for item in errors))
+    must_preserve: dict[str, Any] = {}
+    if value is None or "$" in must_correct:
+        return {"must_preserve": must_preserve, "must_correct": must_correct}
+
+    for field_name in _REPAIR_ARRAY_FIELDS:
+        field_value = value.get(field_name)
+        if not isinstance(field_value, list):
+            continue
+        implicated_indices = {
+            index
+            for path in must_correct
+            if (index := _array_index_from_path(path, field_name)) is not None
+        }
+        for index, item in enumerate(field_value):
+            if index not in implicated_indices:
+                must_preserve[f"{field_name}.{index}"] = item
+
+    for field_name in _REPAIR_SCALAR_FIELDS:
+        if field_name not in value:
+            continue
+        if not any(_path_is_within(path, field_name) for path in must_correct):
+            must_preserve[field_name] = value[field_name]
+
+    return {"must_preserve": must_preserve, "must_correct": must_correct}
+
+
+def _build_deterministic_repair_hints(
+    errors: list[ContractValidationIssue],
+    source_profile: SourceProfile,
+    feature_spec: str,
+) -> list[dict[str, Any]]:
+    error_codes = {item.code for item in errors}
+    requirements = semantic_contract_requirements(feature_spec, source_profile)
+    hints: list[dict[str, Any]] = []
+    if "missing_conversion_metric" in error_codes and len(requirements.ordered_event_names) >= 2:
+        start_event = requirements.ordered_event_names[0]
+        end_event = requirements.ordered_event_names[-1]
+        hints.append(
+            {
+                "error_code": "missing_conversion_metric",
+                "action": "add_array_element",
+                "path": "metrics",
+                "required_value_type": "ratio",
+                "required_numerator_reference": end_event,
+                "grounded_numerator_example": f"count({end_event})",
+                "required_denominator_reference": start_event,
+                "grounded_denominator_example": f"count({start_event})",
+            }
+        )
+    if (
+        "missing_requested_duration_metric" in error_codes
+        or "ungrounded_duration_metric" in error_codes
+    ):
+        hint: dict[str, Any] = {
+            "error_code": "duration_metric_grounding",
+            "action": (
+                "add_array_element"
+                if "missing_requested_duration_metric" in error_codes
+                else "correct_implicated_element"
+            ),
+            "path": "metrics",
+            "required_value_type": "duration",
+            "allowed_duration_fields": list(requirements.duration_field_paths),
+            "grounded_numerator_examples": [
+                f"avg({field})" for field in requirements.duration_field_paths
+            ],
+        }
+        if len(requirements.ordered_event_names) >= 2:
+            hint["grounded_start_event"] = requirements.ordered_event_names[0]
+            hint["grounded_end_event"] = requirements.ordered_event_names[-1]
+        hints.append(hint)
+    if (
+        "missing_requested_failure_metric" in error_codes
+        or "missing_requested_failure_predicate" in error_codes
+        or "ungrounded_failure_metric" in error_codes
+    ):
+        fields = {item.path: item for item in source_profile.fields}
+        hints.append(
+            {
+                "error_code": "failure_metric_grounding",
+                "action": (
+                    "add_array_element"
+                    if "missing_requested_failure_metric" in error_codes
+                    else "correct_implicated_element"
+                ),
+                "path": "metrics",
+                "allowed_false_predicates": [
+                    f"{field} = false" for field in requirements.boolean_predicate_fields
+                ],
+                "predicate_event_scopes": {
+                    field: fields[field].observed_in_events
+                    for field in requirements.boolean_predicate_fields
+                    if field in fields
+                },
+            }
+        )
+    if "ungrounded_ratio_operand" in error_codes:
+        hints.append(
+            {
+                "error_code": "ungrounded_ratio_operand",
+                "action": "correct_exact_error_paths",
+                "paths": [item.path for item in errors if item.code == "ungrounded_ratio_operand"],
+                "allowed_observed_events": sorted(source_profile.event_names),
+                "allowed_observed_fields": sorted(source_profile.field_paths),
+            }
+        )
+    return hints
+
+
+def _repair_preservation_errors(
+    previous: dict[str, Any] | None,
+    repaired: dict[str, Any],
+    repair_scope: dict[str, Any],
+) -> list[ContractValidationIssue]:
+    must_preserve = repair_scope.get("must_preserve", {})
+    must_correct = repair_scope.get("must_correct", [])
+    if not isinstance(must_preserve, dict) or not isinstance(must_correct, list):
+        return []
+
+    changed_paths: set[str] = set()
+    for path, expected in must_preserve.items():
+        found, actual = _value_at_path(repaired, path)
+        if not found or _stable_json_value(actual) != _stable_json_value(expected):
+            changed_paths.add(path)
+
+    if previous is not None:
+        for field_name in _REPAIR_ARRAY_FIELDS:
+            previous_array = previous.get(field_name)
+            repaired_array = repaired.get(field_name)
+            if not isinstance(previous_array, list):
+                continue
+            array_addition_allowed = field_name in must_correct
+            if not isinstance(repaired_array, list):
+                if not _path_is_explicitly_correctable(field_name, must_correct):
+                    changed_paths.add(field_name)
+                continue
+            if not array_addition_allowed and len(repaired_array) > len(previous_array):
+                changed_paths.update(
+                    f"{field_name}.{index}"
+                    for index in range(len(previous_array), len(repaired_array))
+                )
+
+    return [
+        ContractValidationIssue(
+            code="repair_modified_unrelated_field",
+            path=path,
+            message="repair modified a JSON value outside the authorized repair scope",
+        )
+        for path in sorted(changed_paths)
+    ]
+
+
+def _array_index_from_path(path: str, field_name: str) -> int | None:
+    path = path.removeprefix("$.")
+    match = re.match(rf"^{re.escape(field_name)}(?:\.|\[)(\d+)(?:\]|\.|$)", path)
+    return int(match.group(1)) if match is not None else None
+
+
+def _path_is_within(path: str, field_name: str) -> bool:
+    path = path.removeprefix("$.")
+    return (
+        path == field_name or path.startswith(f"{field_name}.") or path.startswith(f"{field_name}[")
+    )
+
+
+def _path_is_explicitly_correctable(path: str, must_correct: list[Any]) -> bool:
+    return any(isinstance(item, str) and _path_is_within(item, path) for item in must_correct)
+
+
+def _value_at_path(value: dict[str, Any], path: str) -> tuple[bool, Any]:
+    current: Any = value
+    for token in path.split("."):
+        if isinstance(current, dict) and token in current:
+            current = current[token]
+        elif isinstance(current, list) and token.isdigit() and int(token) < len(current):
+            current = current[int(token)]
+        else:
+            return False, None
+    return True, current
+
+
+def _stable_json_value(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def _normalized_candidate_hash(value: dict[str, Any]) -> str:

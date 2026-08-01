@@ -1,0 +1,4 @@
+{"event_id":"fx-1","event_name":"forex_addon_shown","event_time":"2026-03-15T10:00:00Z","application_id":"app-a","destination":"US","amount":42.25,"currency":"USD"}
+{"event_id":"fx-2","event_name":"forex_addon_purchased","event_time":"2026-03-15T10:03:00Z","application_id":"app-a","destination":"US","amount":42.25,"currency":"USD"}
+{"event_id":"fx-3","event_name":"forex_addon_shown","event_time":"2026-03-16T10:00:00Z","application_id":"app-b","destination":"FR","amount":38.5,"currency":"EUR"}
+{"event_id":"fx-4","event_name":"forex_addon_purchased","event_time":"2026-03-16T10:03:00Z","application_id":"app-b","destination":"FR","amount":38.5,"currency":"EUR"}

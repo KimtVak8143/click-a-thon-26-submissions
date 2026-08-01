@@ -86,6 +86,18 @@ findings; K1 through K7 remain explicitly unproven hypotheses.
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+Browser access is restricted to the configured comma-separated origin list. The defaults permit
+Vite on `localhost:5173` and `127.0.0.1:5173`; set the deployed frontend origin explicitly in
+production:
+
+```dotenv
+CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS=https://frontend.example.com
+CONTEXT_COMPILER_CORS_ALLOW_CREDENTIALS=false
+```
+
+Only enable credentials when the frontend actually uses cookie-based authentication. Wildcard
+origins cannot be combined with credentials.
+
 Verify the service and ClickHouse separately:
 
 ```bash
@@ -159,8 +171,9 @@ The agent sends the untrusted specification, a value-redacted aggregate source p
 Presentation-only schema metadata and local-only profile diagnostics are omitted, and raw NDJSON
 rows are never sent. A validated intent is deterministically compiled into the complete contract,
 then passed through the existing final Pydantic and grounding gates. Invalid intents are returned
-to the model with exact safe reference errors for at most two repair attempts; exhausted attempts
-return a structured blocked result. `LLM_MAX_OUTPUT_TOKENS` defaults to `2500` for the compact IR.
+to the model with exact safe reference errors and a verified field-preservation scope for at most
+three repair attempts; exhausted attempts return a structured blocked result.
+`LLM_MAX_OUTPUT_TOKENS` defaults to `2500` for the compact IR.
 
 Before provider invocation, the endpoint resolves the latest approved context. Successful
 responses include `context_version_id` and `context_content_sha256`; missing or unavailable

@@ -108,6 +108,7 @@ def test_pipeline_run_end_to_end_returns_completed_run() -> None:
     with TestClient(app) as http:
         response = http.post(
             "/pipeline/run",
+            headers={"Origin": "http://localhost:5173"},
             files={
                 "spec": ("feature.md", SPEC.encode(), "text/markdown"),
                 "events": ("events.ndjson", EVENTS.read_bytes(), "application/x-ndjson"),
@@ -116,6 +117,7 @@ def test_pipeline_run_end_to_end_returns_completed_run() -> None:
         )
 
     assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
     body = response.json()
     assert body["status"] == "completed"
     assert body["feature_slug"] == "express_checkout"

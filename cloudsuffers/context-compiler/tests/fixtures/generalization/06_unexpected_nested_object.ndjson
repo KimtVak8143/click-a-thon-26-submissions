@@ -1,0 +1,4 @@
+{"event_id":"nest-1","event_name":"status_shared","event_time":"2026-03-10T10:00:00Z","share_id":"share-a","channel":"whatsapp","delivery_context":{"client":"web","retry":{"count":0}}}
+{"event_id":"nest-2","event_name":"status_share_opened","event_time":"2026-03-10T10:05:00Z","share_id":"share-a","channel":"whatsapp","recipient_type":"new_user"}
+{"event_id":"nest-3","event_name":"status_shared","event_time":"2026-03-11T10:00:00Z","share_id":"share-b","channel":"email"}
+{"event_id":"nest-4","event_name":"status_share_opened","event_time":"2026-03-11T10:05:00Z","share_id":"share-b","channel":"email","recipient_type":"existing_user"}

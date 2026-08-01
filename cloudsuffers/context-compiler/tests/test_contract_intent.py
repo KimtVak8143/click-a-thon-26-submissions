@@ -12,6 +12,7 @@ from app.agents.instrumentation import InstrumentationAgent
 from app.contracts.compiler import compile_contract_payload
 from app.contracts.intent import (
     ContractIntent,
+    _valid_boolean_predicates,
     canonical_entity_name_for_key,
     classify_question_support,
     preferred_primary_entity_key,
@@ -397,7 +398,7 @@ def test_feature_semantic_fields_remain_required(profile, field_name) -> None:
         ContractIntent.model_validate(value)
 
 
-@pytest.mark.parametrize("field_name", ["role", "description"])
+@pytest.mark.parametrize("field_name", ["description"])
 def test_entity_semantic_fields_remain_required(profile, field_name) -> None:
     value = contract_data(profile)
     value["entities"][0].pop(field_name)
@@ -475,9 +476,9 @@ def test_identical_repair_candidate_stops_after_first_unchanged_repair(profile, 
     assert '"allowed_observed_events"' in repair_prompt
     assert '"allowed_field_paths"' in repair_prompt
     assert '"allowed_declared_entity_ids": ["application"]' in repair_prompt
-    assert "complete ContractIntent, not a patch" in repair_prompt
+    assert "scoped replacement, not an unrestricted regeneration" in repair_prompt
     assert "Empty metrics and dimensions are invalid" in repair_prompt
-    assert "according to every validation error" in repair_prompt
+    assert "Correct every validation error" in repair_prompt
     non_progress_record = next(
         record
         for record in caplog.records
@@ -783,6 +784,47 @@ def test_question_support_is_classified_from_observed_evidence(semantic_profile)
     )
 
 
+def test_unsupported_pm_question_is_required_in_open_questions(profile) -> None:
+    spec = f"{SPEC}\n## Questions the PM will ask\n- How does this compare with a competitor?"
+    value = contract_data(profile, spec)
+    intent = ContractIntent.model_validate(value)
+
+    missing = validate_intent_grounding(
+        intent,
+        profile,
+        spec,
+        expected_feature_slug="express_checkout",
+    )
+    value["open_questions"] = [
+        {
+            "question": "How does this compare with a competitor?",
+            "classification": "requires_external_context",
+            "evidence_ids": ["feature_specification"],
+        }
+    ]
+    covered = validate_intent_grounding(
+        ContractIntent.model_validate(value),
+        profile,
+        spec,
+        expected_feature_slug="express_checkout",
+    )
+
+    assert any(item.code == "missing_unsupported_open_question" for item in missing)
+    assert not any(item.code == "missing_unsupported_open_question" for item in covered)
+
+
+def test_multi_currency_metric_requirement_is_source_profile_driven() -> None:
+    fixtures = Path(__file__).parent / "fixtures" / "generalization"
+    profile = SourceProfiler().profile(fixtures / "09_multi_currency.ndjson")
+    spec = (fixtures / "09_multi_currency.md").read_text(encoding="utf-8")
+
+    requirements = semantic_contract_requirements(spec, profile)
+
+    assert requirements.currency_metric_required is True
+    assert requirements.requested_numeric_paths == ("amount",)
+    assert requirements.multi_currency_paths == ("currency",)
+
+
 def test_observed_dimensions_requested_by_pm_must_be_included(semantic_profile) -> None:
     requirements = semantic_contract_requirements(SEMANTIC_SPEC, semantic_profile)
     assert requirements.requested_dimension_paths == (
@@ -966,9 +1008,7 @@ Ordered user actions: doc_scan_started -> doc_scan_completed -> doc_review_passe
 def doc_verification_profile(tmp_path: Path):
     events_file = tmp_path / "doc_events.ndjson"
     rows = []
-    for i, event_name in enumerate(
-        ["doc_scan_started", "doc_scan_completed", "doc_review_passed"]
-    ):
+    for i, event_name in enumerate(["doc_scan_started", "doc_scan_completed", "doc_review_passed"]):
         row = {
             "id": f"evt-{i}",
             "event_name": event_name,
@@ -1075,3 +1115,47 @@ def test_doc_verification_event_qualified_predicate_also_validates(
     assert "ungrounded_failure_metric" not in codes
     assert "missing_requested_failure_predicate" not in codes
     assert "missing_requested_failure_metric" not in codes
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("NOT verification_passed", {("verification_passed", "false")}),
+        ("not doc_scan_completed.verification_passed", {("verification_passed", "false")}),
+        ("!verification_passed", {("verification_passed", "false")}),
+        ("!doc_scan_completed.verification_passed", {("verification_passed", "false")}),
+        ("verification_passed != true", {("verification_passed", "false")}),
+        ("doc_scan_completed.verification_passed != false", {("verification_passed", "true")}),
+    ],
+)
+def test_boolean_predicate_syntax_is_normalized(expression: str, expected: set) -> None:
+    assert _valid_boolean_predicates(expression, {"verification_passed"}) == expected
+
+
+def test_unambiguous_primary_entity_roles_are_normalized_before_validation(profile) -> None:
+    value = contract_data(profile)
+    value["entities"].append(
+        {
+            "id": "user",
+            "key_field": "user_id",
+            "role": "primary",
+            "description": "Person using the feature",
+            "evidence_ids": ["source_profile"],
+        }
+    )
+    value["entities"][0]["role"] = "secondary"
+
+    intent = ContractIntent.model_validate(value)
+
+    assert [(entity.id, entity.role.value) for entity in intent.entities] == [
+        ("application", "primary"),
+        ("user", "secondary"),
+    ]
+
+
+def test_entity_roles_are_not_normalized_when_primary_id_has_no_unique_match(profile) -> None:
+    value = contract_data(profile)
+    value["primary_entity_id"] = "missing"
+
+    with pytest.raises(ValidationError, match="primary_entity_id"):
+        ContractIntent.model_validate(value)
