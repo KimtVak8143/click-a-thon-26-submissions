@@ -103,8 +103,20 @@ Security and evidence rules:
   zero-denominator behavior, and value type. Cross-currency metrics require a currency dimension
   or an explicit FX-normalization rule. Any event or field named in an expression must be an
   observed event or field from the supplied SourceProfile.
+- Reference fields and events by their exact bare source_path or event name as given in the
+  SourceProfile — do not prefix a field with its owning event name. Write
+  some_boolean_field = false, not some_event.some_boolean_field = false. The bare field name
+  is always the identifier, never a dotted path.
 - Ratio operands must be observed events or observed boolean predicates. A failure numerator must
   use a real observed failure event or a false predicate on an observed boolean field.
+  Example failure-rate metric (substitute actual observed names — do NOT copy these placeholders):
+  {{"id":"some_failure_rate","name":"Some Step Failure Rate","description":"Steps where the
+  boolean flag is false, divided by total attempts","numerator":
+  "countDistinctIf(entity_id_field, some_boolean_field = false)","denominator":
+  "count(some_event)","entity_id":"<declared_entity_id>","value_type":"ratio",
+  "aggregation_grain":"<entity_id>","analysis_window":"30d","zero_denominator_behavior":"null",
+  "time_attribution":"event_time","deduplication_policy":"latest","dimensions":[],
+  "computability":"computable_from_feature","evidence_ids":["feature_specification"]}}
 - Duration metrics require duration_start_event and duration_end_event referencing distinct
   observed events, plus a deterministic time_attribution rule. A latency-looking field alone or
   an event-count ratio is not a complete duration definition.
@@ -201,6 +213,27 @@ def build_generation_request(
     )
 
 
+_PREDICATE_ERROR_CODES = frozenset(
+    {
+        "ungrounded_failure_metric",
+        "ungrounded_success_metric",
+        "ungrounded_ratio_operand",
+        "missing_requested_failure_predicate",
+    }
+)
+
+
+def _boolean_predicate_repair_reminder(validation_errors: list[dict[str, Any]]) -> str:
+    error_codes = {e.get("code") for e in validation_errors}
+    if not (_PREDICATE_ERROR_CODES & error_codes):
+        return ""
+    return (
+        "BOOLEAN PREDICATE rule: use the bare field name exactly as it appears in "
+        "semantic_contract_requirements.boolean_predicate_fields — no event prefix. "
+        "Write `some_field = false`, never `some_event.some_field = false`. "
+    )
+
+
 def build_repair_request(
     original: StructuredGenerationRequest,
     *,
@@ -234,7 +267,8 @@ def build_repair_request(
         "and funnels is empty or missing, you MUST add a funnel entry. Use the event names "
         "from semantic_contract_requirements.ordered_event_names (in order) as ordered_events. "
         "Set entity_id=primary_entity_id, workflow_grain=primary_entity_id, ordered=true. "
-        f"{REQUIRED_FIELD_CHECKLIST}\n"
+        + _boolean_predicate_repair_reminder(validation_errors)
+        + f"{REQUIRED_FIELD_CHECKLIST}\n"
         "Return the "
         "ContractIntent fields directly at the JSON root. Do not wrap the result under "
         "ContractIntent, contract_intent, result, data, response, output, or any other envelope. "

@@ -8,10 +8,10 @@ _EXECUTABLE = re.compile(
     r"\b(?:select\b[^\n]+\bfrom|insert\s+into|update\s+\S+\s+set|delete\s+from|"
     r"drop\s+(?:table|database|view)|truncate\s+table|alter\s+table|"
     r"create\s+(?:table|database|view)|attach\s+table|detach\s+table|"
-    r"grant\s+\S+|revoke\s+\S+|system\s+\S+|rm\s+-[a-z]*[rf]|"
+    r"grant\s+\S+|revoke\s+\S+|system\s+(?:reload|stop|start|flush|sync|kill|drop)\b|rm\s+-[a-z]*[rf]|"
     r"curl\s+https?://|wget\s+https?://|(?:bash|sh|python|powershell)\s+-[a-z])\b|"
     r"(?:reveal|print|expose|return|show).{0,40}(?:system prompt|environment variables?|"
-    r"credentials?|api[_ ]?keys?|filesystem data)|--|/\*|\*/|```|\$\(|&&|\|\|",
+    r"credentials?|api[_ ]?keys?|filesystem data)|/\*|\*/|```|\$\([a-zA-Z0-9_]",
     re.IGNORECASE,
 )
 

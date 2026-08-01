@@ -729,11 +729,13 @@ def validate_intent_grounding(
             ("numerator", metric.numerator),
             ("denominator", metric.denominator),
         ):
+            # Accept event-qualified field references: event.field → bare field must be allowed.
             unknown_references = sorted(
                 {
                     match.group(1)
                     for match in _METRIC_CALL_REFERENCE.finditer(expression)
                     if match.group(1) not in allowed_metric_references
+                    and _bare_name(match.group(1)) not in allowed_metric_references
                 }
             )
             if unknown_references:
@@ -1090,6 +1092,11 @@ def _validate_required_analytical_coverage(
     return errors
 
 
+def _bare_name(token: str) -> str:
+    """Return the leaf segment after the last dot, or the token itself."""
+    return token.rsplit(".", 1)[-1]
+
+
 def _operand_is_grounded(
     expression: str,
     *,
@@ -1106,10 +1113,11 @@ def _operand_is_grounded(
 
 
 def _valid_boolean_predicates(expression: str, boolean_fields: set[str]) -> set[tuple[str, str]]:
+    # Accept event-qualified references: otp_entered.otp_success matches otp_success.
     return {
-        (match.group(1), match.group(2).casefold())
+        (_bare_name(match.group(1)), match.group(2).casefold())
         for match in _BOOLEAN_PREDICATE.finditer(expression)
-        if match.group(1) in boolean_fields
+        if _bare_name(match.group(1)) in boolean_fields
     }
 
 
@@ -1118,9 +1126,9 @@ def _referenced_events(expression: str, events: frozenset[str]) -> set[str]:
 
 
 def _references_name(expression: str, name: str) -> bool:
-    return (
-        re.search(rf"(?<![a-zA-Z0-9_.]){re.escape(name)}(?![a-zA-Z0-9_.])", expression) is not None
-    )
+    # Remove dot from the negative lookbehind so event.field also matches field.
+    # The lookahead keeps dot to prevent partial suffix matches (event.field_extra).
+    return bool(re.search(rf"(?<![a-zA-Z0-9_]){re.escape(name)}(?![a-zA-Z0-9_.])", expression))
 
 
 def _is_timestamp_difference(expression: str, *, events: frozenset[str]) -> bool:
