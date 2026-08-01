@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from app.context.models import ApprovedContext
 from app.contracts.models import AnalyticsContract
 from app.core.logging import get_logger
+from app.core.tracing import InstrumentationTracer, NullInstrumentationTracer
 from app.llm.provider import (
     ProviderError,
     ProviderMessage,
@@ -150,26 +151,81 @@ class AnalyticsAgent:
         contract: AnalyticsContract,
         context: ApprovedContext,
         run_id: UUID,
+        *,
+        tracer: InstrumentationTracer | None = None,
     ) -> AnalyticsResult:
-        query_evidence = self._collect_query_evidence(
-            contract=contract,
-            run_id=run_id,
-        )
-        result = AnalyticsResult(
-            run_id=run_id,
-            feature_slug=contract.feature.slug,
-            insights=[],
-            query_evidence=query_evidence,
-            context_version_id=context.context_version_id,
-            generated_at=datetime.now(UTC),
-        )
-        insights = await self._generate_insights(contract, context, query_evidence)
-        result.insights = insights
-        return result
-
-    def persist_evidence(self, result: AnalyticsResult, context_version_id: UUID) -> None:
-        client = self._get_client()
-        if result.query_evidence:
+        active_tracer = tracer or NullInstrumentationTracer()
+        
+        with active_tracer.observe(
+            "analytics_agent",
+            as_type="agent",
+            input={"feature_slug": contract.feature.slug, "run_id": str(run_id)},
+            metadata={
+                "feature_slug": contract.feature.slug,
+                "context_version_id": str(context.context_version_id),
+            },
+            tags=["analytics"],
+        ) as agent_observation:
+            query_evidence = self._collect_query_evidence(
+                contract=contract,
+                run_id=run_id,
+                tracer=active_tracer,
+            )
+            result = AnalyticsResult(
+                run_id=run_id,
+                feature_slug=contract.feature.slug,
+                insights=[],
+                query_evidence=query_evidence,
+                context_version_id=context.context_version_id,
+                generated_at=datetime.now(UTC),
+            )
+            insights = await self._generate_insights(
+                contract, context, query_evidence, tracer=active_tracer
+            )
+            result.insights = insights
+            
+            agent_observation.update(
+                output={
+                    "insights_count": len(insights),
+                    "queries_executed": len(query_evidence),
+                },
+                metadata={
+                    "feature_slug": contract.feature.slug,
+                    "insights_generated": len(insights),
+                },
+            )
+            return result
+    tracer: InstrumentationTracer,
+    ) -> list[QueryEvidence]:
+        with tracer.observe(
+            "query_execution",
+            as_type="span",
+            input={"feature_slug": contract.feature.slug},
+            metadata={"stage": "query_execution"},
+            tags=["clickhouse", "queries"],
+        ) as queries_observation:
+            queries: list[tuple[str, str, dict[str, Any]]] = [
+                ("baseline_funnel", self._baseline_funnel_sql(), {}),
+                ("weekly_trend_purchases", self._weekly_trend_sql(), {}),
+                ("top_segments_device_type", self._top_segments_sql(), {}),
+                (
+                    "feature_table_ready",
+                    self._feature_table_ready_sql(),
+                    {
+                        "db": self._analytical_database,
+                        "table": self._feature_table_name(contract.feature.slug),
+                    },
+                ),
+            ]
+            evidence: list[QueryEvidence] = []
+            for metric_name, sql, parameters in queries:
+                evidence.append(self._run_query_evidence(metric_name, sql, parameters, tracer))
+            
+            queries_observation.update(
+                output={"queries_executed": len(evidence)},
+                metadata={"queries_count": len(evidence)},
+            )
+            return evidence
             self._insert_query_evidence(client, result, context_version_id)
         if result.insights:
             self._insert_insights(client, result, context_version_id)
@@ -189,59 +245,59 @@ class AnalyticsAgent:
             self._client = self._client_factory()
         return self._client
 
-    def _collect_query_evidence(
-        self,
-        *,
-        contract: AnalyticsContract,
-        run_id: UUID,
-    ) -> list[QueryEvidence]:
-        queries: list[tuple[str, str, dict[str, Any]]] = [
-            ("baseline_funnel", self._baseline_funnel_sql(), {}),
-            ("weekly_trend_purchases", self._weekly_trend_sql(), {}),
-            ("top_segments_device_type", self._top_segments_sql(), {}),
-            (
-                "feature_table_ready",
-                self._feature_table_ready_sql(),
-                {
-                    "db": self._analytical_database,
-                    "table": self._feature_table_name(contract.feature.slug),
-                },
-            ),
-        ]
-        evidence: list[QueryEvidence] = []
-        for metric_name, sql, parameters in queries:
-            evidence.append(self._run_query_evidence(metric_name, sql, parameters))
-        return evidence
-
     def _run_query_evidence(
         self,
         metric_name: str,
         sql: str,
         parameters: dict[str, Any],
+        tracer: InstrumentationTracer,
     ) -> QueryEvidence:
-        started = time.perf_counter()
-        rows: list[dict[str, Any]] = []
-        try:
-            client = self._get_client()
-            result = client.query(sql, parameters=parameters)
-            column_names = list(result.column_names)
-            for row in result.result_rows:
-                mapping = {}
-                for index, value in enumerate(row):
-                    key = column_names[index] if index < len(column_names) else f"col_{index}"
-                    mapping[key] = _stringify(value)
-                rows.append(mapping)
-        except Exception as exc:
-            logger.warning(
-                "analytics_query_failed",
-                extra={"metric": metric_name, "error_type": type(exc).__name__},
+        with tracer.observe(
+            f"query_{metric_name}",
+            as_type="span",
+            input={"metric_name": metric_name, "parameters": parameters},
+            metadata={"query_type": "analytics"},
+            tags=["clickhouse-query"],
+        ) as query_observation:
+            started = time.perf_counter()
+            rows: list[dict[str, Any]] = []
+            error_occurred = False
+            try:
+                client = self._get_client()
+                result = client.query(sql, parameters=parameters)
+                column_names = list(result.column_names)
+                for row in result.result_rows:
+                    mapping = {}
+                    for index, value in enumerate(row):
+                        key = column_names[index] if index < len(column_names) else f"col_{index}"
+                        mapping[key] = _stringify(value)
+                    rows.append(mapping)
+            except Exception as exc:
+                logger.warning(
+                    "analytics_query_failed",
+                    extra={"metric": metric_name, "error_type": type(exc).__name__},
+                )
+                error_occurred = True
+                query_observation.update(
+                    level="ERROR",
+                    status_message=f"Query failed: {str(exc)}",
+                )
+            
+            latency_ms = round((time.perf_counter() - started) * 1000)
+            
+            if not error_occurred:
+                query_observation.update(
+                    output={"rows_returned": len(rows)},
+                    metadata={"latency_ms": latency_ms, "rows": len(rows)},
+                )
+            
+            return QueryEvidence(
+                evidence_id=uuid.uuid4(),
+                metric_name=metric_name,
+                sql=sql,
+                result_json=json.dumps(rows, sort_keys=True, separators=(",", ":")),
+                latency_ms=latency_ms,
             )
-        latency_ms = round((time.perf_counter() - started) * 1000)
-        return QueryEvidence(
-            evidence_id=uuid.uuid4(),
-            metric_name=metric_name,
-            sql=sql,
-            result_json=json.dumps(rows, sort_keys=True, separators=(",", ":")),
             latency_ms=latency_ms,
         )
 
@@ -250,23 +306,55 @@ class AnalyticsAgent:
         contract: AnalyticsContract,
         context: ApprovedContext,
         evidence: list[QueryEvidence],
+        *,
+        tracer: InstrumentationTracer,
     ) -> list[FeatureInsight]:
-        request = self._build_generation_request(contract, context, evidence)
-        try:
-            response = await self._provider.generate(request)
-        except ProviderError as exc:
-            logger.warning(
-                "analytics_provider_failed",
-                extra={"error_category": exc.category.value, "status_code": exc.status_code},
+        with tracer.observe(
+            "insight_generation",
+            as_type="generation",
+            input={"evidence_count": len(evidence), "feature_slug": contract.feature.slug},
+            metadata={
+                "evidence_count": len(evidence),
+                "feature_slug": contract.feature.slug,
+            },
+            model=self._provider.model_name,
+            tags=["insight-generation"],
+        ) as generation_observation:
+            request = self._build_generation_request(contract, context, evidence)
+            try:
+                response = await self._provider.generate(request)
+                generation_observation.update(
+                    output={"response_length": len(response.content)},
+                    model=response.model,
+                    usage=(response.usage.as_langfuse() if response.usage else None),
+                )
+            except ProviderError as exc:
+                logger.warning(
+                    "analytics_provider_failed",
+                    extra={"error_category": exc.category.value, "status_code": exc.status_code},
+                )
+                generation_observation.update(
+                    level="ERROR",
+                    status_message=f"Provider error: {exc.safe_message}",
+                )
+                return []
+            except Exception as exc:
+                logger.warning(
+                    "analytics_provider_unexpected_error",
+                    extra={"error_type": type(exc).__name__},
+                )
+                generation_observation.update(
+                    level="ERROR",
+                    status_message=f"Unexpected error: {str(exc)}",
+                )
+                return []
+            
+            insights = _parse_insights(response.content)
+            generation_observation.update(
+                output={"insights_generated": len(insights)},
+                metadata={"insights_count": len(insights)},
             )
-            return []
-        except Exception as exc:
-            logger.warning(
-                "analytics_provider_unexpected_error",
-                extra={"error_type": type(exc).__name__},
-            )
-            return []
-        return _parse_insights(response.content)
+            return insights
 
     def _build_generation_request(
         self,
