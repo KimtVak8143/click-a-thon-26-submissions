@@ -1,0 +1,115 @@
+{
+  "mcpServers": {
+    "context-compiler": {
+      "name": "Context Compiler",
+      "description": "Analytics contract generation, SQL analysis, and context intelligence for ClickHouse",
+      "url": "https://click-a-thon-26-submissions-production.up.railway.app",
+      "version": "1.0.0",
+      "transport": {
+        "type": "http",
+        "baseUrl": "https://click-a-thon-26-submissions-production.up.railway.app"
+      },
+      "capabilities": [
+        "analytics_contracts",
+        "sql_analysis",
+        "context_management",
+        "schema_generation",
+        "data_exploration"
+      ],
+      "endpoints": {
+        "chat": "/v1/chat/completions",
+        "models": "/v1/models",
+        "health": "/health"
+      },
+      "tools": [
+        {
+          "name": "analyze_clickhouse_query",
+          "description": "Analyze ClickHouse SQL queries for performance, correctness, and best practices",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "The ClickHouse SQL query to analyze"
+              },
+              "context": {
+                "type": "string",
+                "description": "Optional business context or purpose of the query"
+              }
+            },
+            "required": ["query"]
+          }
+        },
+        {
+          "name": "generate_analytics_contract",
+          "description": "Generate an analytics contract from a feature specification with entities, metrics, and relationships",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "feature_spec": {
+                "type": "string",
+                "description": "Feature specification describing what to track and analyze"
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "List of event names to include in the analysis"
+              }
+            },
+            "required": ["feature_spec", "events"]
+          }
+        },
+        {
+          "name": "execute_clickhouse_query",
+          "description": "Execute a read-only ClickHouse SQL query and return results for data exploration",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "The SELECT query to execute (must be read-only)"
+              },
+              "database": {
+                "type": "string",
+                "description": "Database name (optional, uses default if not specified)"
+              }
+            },
+            "required": ["query"]
+          }
+        },
+        {
+          "name": "get_context_entities",
+          "description": "Retrieve approved context entities and their definitions to see available data structures and metrics",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "entity_name": {
+                "type": "string",
+                "description": "Optional filter by entity name"
+              }
+            }
+          }
+        },
+        {
+          "name": "check_context_drift",
+          "description": "Check for drift between approved context and observed events to identify missing events, extra fields, or schema changes",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "entity_name": {
+                "type": "string",
+                "description": "Entity name to check for drift"
+              }
+            },
+            "required": ["entity_name"]
+          }
+        }
+      ],
+      "authentication": {
+        "type": "none"
+      }
+    }
+  }
+}
