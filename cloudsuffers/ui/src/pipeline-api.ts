@@ -34,16 +34,38 @@ export interface ContractDimension {
   description?: string;
 }
 
+export interface ContractEntity {
+  name?: string;
+  field_path?: string;
+  description?: string;
+  role?: "primary" | "secondary" | string;
+  stable?: boolean;
+}
+
+export interface ContractRelationship {
+  name?: string;
+  from_entity?: string;
+  to_entity?: string;
+  from_field?: string;
+  to_field?: string;
+  cardinality?: string;
+  description?: string;
+}
+
 export interface AnalyticsContract extends Record<string, unknown> {
   feature?: ContractFeature;
   grain?: string;
   primary_entity?: string;
-  entities?: unknown[];
+  secondary_entities?: string[];
+  entities?: ContractEntity[];
   events?: unknown[];
   fields?: unknown[];
   funnels?: ContractFunnel[];
   metrics?: ContractMetric[];
   dimensions?: ContractDimension[];
+  relationships?: ContractRelationship[];
+  context_version_id?: string | null;
+  context_content_sha256?: string | null;
 }
 
 export interface PipelineSchemaPlan {
