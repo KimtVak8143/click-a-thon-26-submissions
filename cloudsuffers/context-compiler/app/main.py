@@ -13,6 +13,7 @@ from app.api.analytics import router as analytics_router
 from app.api.contracts import router as contracts_router
 from app.api.dashboard import router as dashboard_router
 from app.api.health import router as health_router
+from app.api.mcp import router as mcp_router
 from app.api.pipeline import router as pipeline_router
 from app.api.profiles import router as profiles_router
 from app.clickhouse.client import build_clickhouse_client
@@ -172,6 +173,7 @@ def create_app(
     app.include_router(pipeline_router)
     app.include_router(dashboard_router)
     app.include_router(analytics_router)
+    app.include_router(mcp_router)
     
     @app.get("/")
     def root() -> dict[str, str]:

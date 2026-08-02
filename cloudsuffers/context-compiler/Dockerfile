@@ -41,12 +41,12 @@ RUN useradd -m -u 1000 appuser && \
 
 USER appuser
 
-# Expose ports (FastAPI + MCP)
-EXPOSE 8080 8002
+# Expose main port only (MCP integrated at /mcp endpoint on same port)
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:${PORT:-8080}/health', timeout=5.0)" || exit 1
 
-# Start command (using railway-start.sh for multi-process management)
+# Start command - runs migrations, bootstraps context, starts FastAPI with MCP
 CMD ["bash", "scripts/railway-start.sh"]
