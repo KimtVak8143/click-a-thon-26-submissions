@@ -15,6 +15,7 @@ from app.context.repository import InMemoryContextRepository
 from app.core.config import Settings
 from app.llm.fake import FakeStructuredGenerationProvider
 from app.main import create_app
+from app.metrics.baseline import BaselineMetricsService
 from app.profiling.profiler import SourceProfiler
 from tests.test_instrumentation_agent import SPEC, contract_data, encoded
 
@@ -83,6 +84,11 @@ def _stub_backed_app(
             client_factory=factory,
             analytical_database=settings.clickhouse_database,
             metadata_database=settings.clickhouse_metadata_database,
+        ),
+        baseline_metrics_service=BaselineMetricsService(
+            factory,
+            settings.clickhouse_database,
+            settings.clickhouse_metadata_database,
         ),
     )
 
@@ -173,6 +179,11 @@ def test_pipeline_run_blocks_when_no_approved_context_is_present() -> None:
             client_factory=lambda: stub,
             analytical_database=settings.clickhouse_database,
             metadata_database=settings.clickhouse_metadata_database,
+        ),
+        baseline_metrics_service=BaselineMetricsService(
+            lambda: stub,
+            settings.clickhouse_database,
+            settings.clickhouse_metadata_database,
         ),
     )
 

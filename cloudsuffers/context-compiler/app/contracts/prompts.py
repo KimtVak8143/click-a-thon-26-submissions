@@ -171,8 +171,10 @@ def build_generation_request(
     expected_feature_slug: str,
     context_summary: str | None,
     context_evidence_ids: list[str] | None = None,
+    context_max_chars: int = 8_000,
 ) -> StructuredGenerationRequest:
     filtered_context = _filter_context_for_profile(context_summary, source_profile)
+    filtered_context = _bound_context_json(filtered_context, context_max_chars)
     filtered_context_evidence_ids = _filter_context_evidence_ids(
         context_evidence_ids or [], filtered_context
     )
@@ -666,6 +668,13 @@ def _filter_context_for_profile(
         for issue in issues_kept
         if isinstance(issue, dict) and isinstance(issue.get("issue_code"), str)
     )
+    baseline_metrics = ctx.get("baseline_metrics")
+    if isinstance(baseline_metrics, dict):
+        grounded_evidence_ids.update(
+            evidence_id
+            for evidence_id in baseline_metrics.get("evidence_ids", [])
+            if isinstance(evidence_id, str)
+        )
     result: dict[str, Any] = {
         **ctx,
         "entities": entities_kept,
@@ -716,6 +725,75 @@ def _filter_context_evidence_ids(
         for evidence_id in evidence_ids
         if evidence_id in grounded or evidence_id.rsplit(":", 1)[-1] in issue_codes
     )
+
+
+def _bound_context_json(context: str | None, max_chars: int) -> str | None:
+    """Keep a context projection valid JSON while enforcing the prompt-size budget."""
+
+    if context is None or len(context) <= max_chars:
+        return context
+    if max_chars <= 2:
+        return None
+    try:
+        payload = json.loads(context)
+    except (TypeError, ValueError):
+        return context[:max_chars]
+    if not isinstance(payload, dict):
+        return context[:max_chars]
+
+    bounded: dict[str, Any] = {}
+    priority = (
+        "canonical_funnel",
+        "supporting_events",
+        "grain_policy",
+        "entities",
+        "baseline_metrics",
+        "evidence_ids",
+        "metrics",
+        "relationships",
+        "issues",
+    )
+    for key in priority:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, list):
+            bounded[key] = []
+            for item in value:
+                candidate = {**bounded, key: [*bounded[key], item]}
+                if len(_stable_json(candidate)) > max_chars:
+                    break
+                bounded = candidate
+            continue
+        if isinstance(value, dict) and key == "baseline_metrics":
+            compact_baseline = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key != "metrics"
+            }
+            candidate = {**bounded, key: {**compact_baseline, "metrics": []}}
+            if len(_stable_json(candidate)) > max_chars:
+                continue
+            bounded = candidate
+            for metric in value.get("metrics", []):
+                candidate_metrics = [*bounded[key]["metrics"], metric]
+                candidate = {
+                    **bounded,
+                    key: {**bounded[key], "metrics": candidate_metrics},
+                }
+                if len(_stable_json(candidate)) > max_chars:
+                    break
+                bounded = candidate
+            continue
+        candidate = {**bounded, key: value}
+        if len(_stable_json(candidate)) <= max_chars:
+            bounded = candidate
+    bounded["context_truncated"] = True
+    serialized = _stable_json(bounded)
+    if len(serialized) <= max_chars:
+        return serialized
+    bounded.pop("context_truncated")
+    return _stable_json(bounded)
 
 
 def _stable_json(value: Any) -> str:

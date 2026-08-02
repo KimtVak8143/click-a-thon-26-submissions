@@ -48,11 +48,20 @@ class SchemaPlanner:
     deploys the DDL against ClickHouse.
     """
 
-    def __init__(self, client_factory: Callable[[], Any], database: str) -> None:
+    def __init__(
+        self,
+        client_factory: Callable[[], Any],
+        database: str,
+        *,
+        retention_days: int = 730,
+    ) -> None:
         if not _IDENTIFIER.fullmatch(database):
             raise ValueError("database must be a safe ClickHouse identifier")
+        if retention_days < 1:
+            raise ValueError("retention_days must be positive")
         self._client_factory = client_factory
         self._database = database
+        self._retention_days = retention_days
         self._client: Any | None = None
 
     # ------------------------------------------------------------------ plan
@@ -217,13 +226,18 @@ class SchemaPlanner:
 
     def _build_event_table_ddl(self, contract: AnalyticsContract, table_name: str) -> str:
         primary_key = _primary_entity_key(contract)
+        observed_paths = {
+            definition.source_path for definition in contract.fields if not definition.spec_only
+        }
         columns: list[str] = [
             "id UUID",
-            "event_name LowCardinality(String)",
             "timestamp DateTime64(3, 'UTC')",
             "_ingested_at DateTime64(3, 'UTC') DEFAULT now64(3)",
         ]
-        seen: set[str] = {"id", "event_name", "timestamp", "_ingested_at"}
+        seen: set[str] = {"id", "timestamp", "_ingested_at"}
+        if "event_name" in observed_paths:
+            columns.append("event_name LowCardinality(String)")
+            seen.add("event_name")
         for definition in contract.fields:
             if definition.spec_only:
                 continue
@@ -231,11 +245,14 @@ class SchemaPlanner:
             if column_name in seen:
                 continue
             seen.add(column_name)
-            scope_comment = ""
-            if definition.event_scope:
-                events = ", ".join(sorted(set(definition.event_scope)))
-                scope_comment = f" -- scoped to events: {events}"
-            columns.append(f"{column_name} {definition.clickhouse_type}{scope_comment}")
+            columns.append(f"{column_name} {definition.clickhouse_type}")
+        if "event_name" not in seen:
+            if "event" in seen:
+                columns.append(
+                    "event_name LowCardinality(String) MATERIALIZED toLowCardinality(event)"
+                )
+            else:
+                columns.append("event_name LowCardinality(String)")
         columns_block = ",\n    ".join(columns)
         order_by = (
             f"({primary_key}, event_name, timestamp)" if primary_key else "(event_name, timestamp)"
@@ -245,7 +262,8 @@ class SchemaPlanner:
             f"(\n    {columns_block}\n)\n"
             "ENGINE = MergeTree\n"
             "PARTITION BY toYYYYMM(timestamp)\n"
-            f"ORDER BY {order_by}"
+            f"ORDER BY {order_by}\n"
+            f"TTL timestamp + INTERVAL {self._retention_days} DAY DELETE"
         )
 
     def _build_funnel_mv_ddl(self, contract: AnalyticsContract, table_name: str) -> str:
@@ -261,7 +279,7 @@ class SchemaPlanner:
             "AS SELECT\n"
             "    toDate(timestamp) AS date,\n"
             "    event_name,\n"
-            f"    countState(DISTINCT {primary_key}) AS unique_entity_count\n"
+            f"    uniqExactState({primary_key}) AS unique_entity_count\n"
             f"FROM `{self._database}`.`{table_name}`\n"
             "GROUP BY date, event_name"
         )

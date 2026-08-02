@@ -109,6 +109,13 @@ initialize_backend() {
     run_backend "${REPO_ROOT}/.venv/bin/python" -m app.cli \
       bootstrap-context --source docs/base_context.md
   )
+  info "Precomputing metrics from the eight existing Atlys tables..."
+  if ! (
+    cd "${REPO_ROOT}"
+    run_backend "${REPO_ROOT}/.venv/bin/python" -m app.cli precompute-baseline
+  ); then
+    info "WARNING: baseline metrics were not computed; load the Atlys source tables first."
+  fi
 }
 
 check_llm_configuration() {

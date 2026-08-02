@@ -488,7 +488,7 @@ def test_identical_repair_candidate_stops_after_first_unchanged_repair(profile, 
     assert marker not in caplog.text
 
 
-def test_changed_invalid_repair_candidate_may_continue(profile) -> None:
+def test_changed_invalid_repair_candidate_restores_unrelated_values(profile) -> None:
     first = contract_data(profile)
     first["feature"].pop("objective")
     second = contract_data(profile)
@@ -499,8 +499,8 @@ def test_changed_invalid_repair_candidate_may_continue(profile) -> None:
     result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
 
     assert result.validation_status == "valid"
-    assert result.attempts == 3
-    assert len(provider.requests) == 3
+    assert result.attempts == 2
+    assert len(provider.requests) == 2
 
 
 def test_direct_root_contract_intent_succeeds(profile) -> None:

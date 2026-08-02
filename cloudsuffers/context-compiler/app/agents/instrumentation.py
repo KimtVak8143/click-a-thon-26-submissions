@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.contracts.compiler import compile_contract_payload
 from app.contracts.intent import (
     ContractIntent,
+    infer_observed_semantic_type,
     semantic_contract_requirements,
+    unsupported_pm_questions,
     validate_intent_grounding,
 )
 from app.contracts.models import AnalyticsContract
@@ -103,9 +105,7 @@ class InstrumentationAgent:
         trace_id = active_run_id.hex
         feature_slug = feature_slug_from_spec(feature_spec)
         spec_sha256 = hashlib.sha256(feature_spec.encode("utf-8")).hexdigest()
-        bounded_context = (
-            context_summary[: self._context_max_chars] if context_summary is not None else None
-        )
+        bounded_context = context_summary
         active_tracer = tracer or NullInstrumentationTracer()
         base_metadata = {
             "run_id": str(active_run_id),
@@ -243,6 +243,7 @@ class InstrumentationAgent:
                 expected_feature_slug=feature_slug,
                 context_summary=bounded_context,
                 context_evidence_ids=context_evidence_ids,
+                context_max_chars=self._context_max_chars,
             )
             prompt_timing = _request_timing(
                 initial_request,
@@ -414,6 +415,33 @@ class InstrumentationAgent:
                     if parsed_candidate is not None:
                         decoded = decode_contract_intent_envelope(parsed_candidate)
                         parsed_candidate = decoded.value
+                        deterministic_normalization = (
+                            _normalize_deterministic_candidate(
+                                parsed_candidate,
+                                feature_spec,
+                                source_profile,
+                                previous_validation_errors,
+                            )
+                            if attempt
+                            else {}
+                        )
+                        if deterministic_normalization:
+                            envelope_metadata["deterministic_normalization"] = (
+                                deterministic_normalization
+                            )
+                        deterministic_questions_added = _materialize_unsupported_open_questions(
+                            parsed_candidate, feature_spec, source_profile
+                        )
+                        if deterministic_questions_added:
+                            envelope_metadata["deterministic_open_questions_added"] = (
+                                deterministic_questions_added
+                            )
+                        if attempt and repair_scope is not None:
+                            restored_count = _enforce_repair_scope(
+                                repair_source_candidate, parsed_candidate, repair_scope
+                            )
+                            if restored_count:
+                                envelope_metadata["preserved_values_restored"] = restored_count
                         if decoded.provider_envelope_unwrapped:
                             envelope_metadata = {
                                 "provider_envelope_unwrapped": True,
@@ -1169,6 +1197,209 @@ def _build_repair_scope(
     return {"must_preserve": must_preserve, "must_correct": must_correct}
 
 
+def _materialize_unsupported_open_questions(
+    candidate: dict[str, Any],
+    feature_spec: str,
+    source_profile: SourceProfile,
+) -> int:
+    """Add missing deterministic questions before validation and LLM repair.
+
+    Support classification is a pure function of the spec and observed profile, so asking the
+    provider to rediscover it during repair adds latency and can create a no-progress loop.
+    """
+
+    questions = candidate.get("open_questions")
+    if not isinstance(questions, list):
+        questions = []
+        candidate["open_questions"] = questions
+    existing = {
+        item.get("question", "").strip().casefold(): item
+        for item in questions
+        if isinstance(item, dict) and isinstance(item.get("question"), str)
+    }
+    added = 0
+    for question, classification in unsupported_pm_questions(feature_spec, source_profile):
+        key = question.strip().casefold()
+        item = existing.get(key)
+        if item is None:
+            item = {"question": question}
+            questions.append(item)
+            existing[key] = item
+            added += 1
+        item["classification"] = classification.value
+        item["blocking"] = False
+        item["context"] = (
+            "This question cannot be answered from the supplied feature event sample alone."
+        )
+        evidence_ids = item.get("evidence_ids")
+        if not isinstance(evidence_ids, list):
+            evidence_ids = []
+        item["evidence_ids"] = sorted(
+            {value for value in evidence_ids if isinstance(value, str)}
+            | {"feature_specification", "source_profile"}
+        )
+    return added
+
+
+def _normalize_deterministic_candidate(
+    candidate: dict[str, Any],
+    feature_spec: str,
+    source_profile: SourceProfile,
+    validation_errors: list[ContractValidationIssue],
+) -> dict[str, int]:
+    """Apply only repairs whose values are completely determined by spec/profile evidence."""
+
+    counts: dict[str, int] = {}
+    error_codes = {error.code for error in validation_errors}
+    entity_ids = {
+        item.get("id")
+        for item in candidate.get("entities", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    observed_fields = source_profile.field_paths
+    relationships = candidate.get("relationships")
+    if isinstance(relationships, list):
+        kept = [
+            item
+            for item in relationships
+            if isinstance(item, dict)
+            and item.get("source_entity_id") in entity_ids
+            and item.get("target_entity_id") in entity_ids
+            and item.get("source_field") in observed_fields
+            and item.get("target_field") in observed_fields
+        ]
+        removed = len(relationships) - len(kept)
+        if removed:
+            candidate["relationships"] = kept
+            counts["invalid_relationships_removed"] = removed
+
+    if "observed_dimension_semantic_type_mismatch" in error_codes:
+        identifier_paths = {
+            identifier.field_path for identifier in source_profile.candidate_identifiers
+        }
+        field_profiles = {field.path: field for field in source_profile.fields}
+        for dimension in candidate.get("dimensions", []):
+            if not isinstance(dimension, dict):
+                continue
+            field_path = dimension.get("field_path")
+            if not isinstance(field_path, str) or field_path not in field_profiles:
+                continue
+            expected = infer_observed_semantic_type(
+                field_profiles[field_path], is_identifier=field_path in identifier_paths
+            ).value
+            if dimension.get("semantic_type") != expected:
+                dimension["semantic_type"] = expected
+                counts["dimension_semantic_types_corrected"] = (
+                    counts.get("dimension_semantic_types_corrected", 0) + 1
+                )
+
+    metrics = candidate.get("metrics")
+    primary_entity_id = candidate.get("primary_entity_id")
+    if not isinstance(metrics, list) or not isinstance(primary_entity_id, str):
+        return counts
+
+    requirements = semantic_contract_requirements(feature_spec, source_profile)
+    field_profiles = {field.path: field for field in source_profile.fields}
+    start_event = requirements.ordered_event_names[0] if requirements.ordered_event_names else None
+    end_event = requirements.ordered_event_names[-1] if requirements.ordered_event_names else None
+    boolean_field = (
+        requirements.boolean_predicate_fields[0] if requirements.boolean_predicate_fields else None
+    )
+    boolean_event = None
+    if boolean_field is not None:
+        observed_in = field_profiles[boolean_field].observed_in_events
+        boolean_event = observed_in[0] if observed_in else None
+
+    failure_metrics = 0
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        semantic_text = (
+            f"{metric.get('id', '')} {metric.get('name', '')} "
+            f"{metric.get('description', '')}".casefold()
+        )
+        if (
+            "ambiguous_conversion_metric" in error_codes
+            and metric.get("id") == "conversion_rate"
+            and start_event
+            and end_event
+        ):
+            metric["id"] = f"{end_event}_per_{start_event}_rate"
+            counts["ambiguous_metric_ids_rewritten"] = (
+                counts.get("ambiguous_metric_ids_rewritten", 0) + 1
+            )
+        if any(token in semantic_text for token in ("fail", "error", "unsuccessful")):
+            failure_metrics += 1
+            if (
+                boolean_field
+                and boolean_event
+                and error_codes
+                & {
+                    "ungrounded_failure_metric",
+                    "missing_requested_failure_predicate",
+                }
+            ):
+                metric["numerator"] = f"countIf({boolean_field} = false)"
+                metric["denominator"] = f"count({boolean_event})"
+                counts["failure_metrics_grounded"] = counts.get("failure_metrics_grounded", 0) + 1
+            continue
+        if not error_codes & {"ungrounded_success_metric", "missing_conversion_metric"} or not any(
+            token in semantic_text
+            for token in ("success", "conversion", "convert", "confirmed", "completed")
+        ):
+            continue
+        if boolean_field and boolean_event and boolean_field.rsplit(".", 1)[-1] in semantic_text:
+            metric["numerator"] = f"countIf({boolean_field} = true)"
+            metric["denominator"] = f"count({boolean_event})"
+            counts["success_metrics_grounded"] = counts.get("success_metrics_grounded", 0) + 1
+        elif start_event and end_event and metric.get("value_type") == "ratio":
+            metric["numerator"] = f"count({end_event})"
+            metric["denominator"] = f"count({start_event})"
+            counts["success_metrics_grounded"] = counts.get("success_metrics_grounded", 0) + 1
+
+    if (
+        "missing_requested_failure_metric" in error_codes
+        and requirements.failure_metric_required
+        and not failure_metrics
+        and boolean_field
+        and boolean_event
+    ):
+        dimension_paths = [
+            item.get("field_path")
+            for item in candidate.get("dimensions", [])
+            if isinstance(item, dict) and isinstance(item.get("field_path"), str)
+        ]
+        metrics.append(
+            {
+                "id": f"{_identifier_fragment(boolean_field)}_failure_rate",
+                "name": f"{boolean_field} failure rate",
+                "description": (f"Share of {boolean_event} events where {boolean_field} is false."),
+                "numerator": f"countIf({boolean_field} = false)",
+                "denominator": f"count({boolean_event})",
+                "entity_id": primary_entity_id,
+                "aggregation_grain": primary_entity_id,
+                "analysis_window": "30d",
+                "zero_denominator_behavior": "null",
+                "value_type": "ratio",
+                "currency_dimension_field": None,
+                "fx_normalization_rule": None,
+                "time_attribution": "timestamp of the observed failure event",
+                "deduplication_policy": "deduplicate by observed event id",
+                "dimensions": dimension_paths,
+                "computability": "computable",
+                "evidence_ids": ["feature_specification", "source_profile"],
+                "duration_start_event": None,
+                "duration_end_event": None,
+            }
+        )
+        counts["required_failure_metrics_added"] = 1
+    return counts
+
+
+def _identifier_fragment(field_path: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "_", field_path.casefold()).strip("_") or "metric"
+
+
 def _build_deterministic_repair_hints(
     errors: list[ContractValidationIssue],
     source_profile: SourceProfile,
@@ -1293,6 +1524,63 @@ def _repair_preservation_errors(
         )
         for path in sorted(changed_paths)
     ]
+
+
+def _enforce_repair_scope(
+    previous: dict[str, Any] | None,
+    repaired: dict[str, Any],
+    repair_scope: dict[str, Any],
+) -> int:
+    """Restore provider changes outside the validator-authorized repair paths."""
+
+    must_preserve = repair_scope.get("must_preserve", {})
+    must_correct = repair_scope.get("must_correct", [])
+    if not isinstance(must_preserve, dict) or not isinstance(must_correct, list):
+        return 0
+    restored = 0
+    for path, expected in must_preserve.items():
+        found, actual = _value_at_path(repaired, path)
+        if found and _stable_json_value(actual) == _stable_json_value(expected):
+            continue
+        if _set_value_at_path(repaired, path, expected):
+            restored += 1
+
+    if previous is None:
+        return restored
+    for field_name in _REPAIR_ARRAY_FIELDS:
+        previous_array = previous.get(field_name)
+        repaired_array = repaired.get(field_name)
+        if (
+            isinstance(previous_array, list)
+            and isinstance(repaired_array, list)
+            and field_name not in must_correct
+            and len(repaired_array) > len(previous_array)
+        ):
+            restored += len(repaired_array) - len(previous_array)
+            del repaired_array[len(previous_array) :]
+    return restored
+
+
+def _set_value_at_path(root: dict[str, Any], path: str, value: Any) -> bool:
+    tokens = re.findall(r"[^.\[\]]+", path.removeprefix("$."))
+    if not tokens:
+        return False
+    current: Any = root
+    for token in tokens[:-1]:
+        if isinstance(current, dict) and token in current:
+            current = current[token]
+        elif isinstance(current, list) and token.isdigit() and int(token) < len(current):
+            current = current[int(token)]
+        else:
+            return False
+    final = tokens[-1]
+    if isinstance(current, dict):
+        current[final] = value
+        return True
+    if isinstance(current, list) and final.isdigit() and int(final) < len(current):
+        current[int(final)] = value
+        return True
+    return False
 
 
 def _array_index_from_path(path: str, field_name: str) -> int | None:

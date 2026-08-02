@@ -386,7 +386,8 @@ def preferred_primary_entity_key(
 
     events = set(required_events or ())
     fields = {item.path: item for item in source_profile.fields}
-    eligible: list[tuple[int, int, float, float, str]] = []
+    title = _feature_title_text(feature_spec)
+    eligible: list[tuple[int, int, int, float, float, str]] = []
     for candidate in source_profile.candidate_identifiers:
         canonical_name = canonical_entity_name_for_key(candidate.field_path, feature_spec)
         field = fields.get(candidate.field_path)
@@ -396,10 +397,13 @@ def preferred_primary_entity_key(
             continue
         leaf = candidate.field_path.rsplit(".", 1)[-1]
         scope_rank = 0 if _WORKFLOW_KEY.fullmatch(leaf) else 2 if _PERSON_KEY.fullmatch(leaf) else 1
+        title_position = _normalized_words(title).find(_normalized_words(canonical_name))
+        title_rank = title_position if title_position >= 0 else 1_000_000
         mentioned_rank = 0 if mentioned_in_spec(feature_spec, candidate.field_path) else 1
         eligible.append(
             (
                 scope_rank,
+                title_rank,
                 mentioned_rank,
                 -candidate.coverage,
                 candidate.uniqueness_ratio,
@@ -468,12 +472,7 @@ def semantic_contract_requirements(
     unsupported_question_classifications = tuple(
         sorted(
             classification.value
-            for question in _pm_questions(feature_spec)
-            if (classification := classify_question_support(question, source_profile))
-            in {
-                QuestionSupportClassification.REQUIRES_EXTERNAL_CONTEXT,
-                QuestionSupportClassification.NOT_COMPUTABLE,
-            }
+            for _, classification in unsupported_pm_questions(feature_spec, source_profile)
         )
     )
     speed_requested = _SPEED_SIGNAL.search(question_text) is not None
@@ -960,6 +959,22 @@ def classify_question_support(
     return QuestionSupportClassification.NOT_COMPUTABLE
 
 
+def unsupported_pm_questions(
+    feature_spec: str, source_profile: SourceProfile
+) -> tuple[tuple[str, QuestionSupportClassification], ...]:
+    """Return unsupported PM questions with deterministic support classifications."""
+
+    unsupported = {
+        QuestionSupportClassification.REQUIRES_EXTERNAL_CONTEXT,
+        QuestionSupportClassification.NOT_COMPUTABLE,
+    }
+    return tuple(
+        (question, classification)
+        for question in _pm_questions(feature_spec)
+        if (classification := classify_question_support(question, source_profile)) in unsupported
+    )
+
+
 def _validate_metric_semantics(
     metric: IntentMetric,
     *,
@@ -1316,6 +1331,14 @@ def _pm_questions(feature_spec: str) -> tuple[str, ...]:
         for line in _pm_question_text(feature_spec).splitlines()
         if "?" in line
     )
+
+
+def _feature_title_text(feature_spec: str) -> str:
+    for line in feature_spec.splitlines():
+        match = re.match(r"^\s*#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def _field_is_requested(text: str, field_path: str) -> bool:
