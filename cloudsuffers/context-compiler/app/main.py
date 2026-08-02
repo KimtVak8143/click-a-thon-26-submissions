@@ -12,6 +12,7 @@ from app.agents.schema_planner import SchemaPlanner
 from app.api.contracts import router as contracts_router
 from app.api.dashboard import router as dashboard_router
 from app.api.health import router as health_router
+from app.api.llm_gateway import router as llm_gateway_router
 from app.api.pipeline import router as pipeline_router
 from app.api.profiles import router as profiles_router
 from app.clickhouse.client import build_clickhouse_client
@@ -160,6 +161,7 @@ def create_app(
     app.include_router(contracts_router)
     app.include_router(pipeline_router)
     app.include_router(dashboard_router)
+    app.include_router(llm_gateway_router)  # OpenAI-compatible API for LibreChat
     
     @app.get("/")
     def root() -> dict[str, str]:
