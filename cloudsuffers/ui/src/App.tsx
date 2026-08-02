@@ -207,7 +207,7 @@ export default function App() {
           <a href="#artifacts">Artifacts</a>
           <a href="#er-diagram">ER diagram</a>
           <a href="#observability">Observability</a>
-          <a className="chat" href="http://localhost:3080" target="_blank" rel="noreferrer">Open LibreChat</a>
+          <a className="chat" href={import.meta.env.VITE_LIBRECHAT_URL || "https://ai.clickhouse.cloud/c/new"} target="_blank" rel="noreferrer">Open AI Workspace</a>
         </nav>
       </header>
 
