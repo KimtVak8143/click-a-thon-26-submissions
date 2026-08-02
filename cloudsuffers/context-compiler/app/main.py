@@ -13,13 +13,14 @@ from app.api.contracts import router as contracts_router
 from app.api.dashboard import router as dashboard_router
 from app.api.health import router as health_router
 from app.api.llm_gateway import router as llm_gateway_router
+from app.api.openai_gateway import router as openai_gateway_router
 from app.api.pipeline import router as pipeline_router
 from app.api.profiles import router as profiles_router
 from app.clickhouse.client import build_clickhouse_client
 from app.clickhouse.repository import ClickHouseHealthRepository
 from app.context.repository import ClickHouseContextRepository, ContextRepositoryProtocol
 from app.core.config import Settings, get_settings
-from app.core.logging import configure_logging, get_logger
+from app.core.logging import configure_logging, get_loggerx
 from app.core.metrics import configure_otel, instrument_fastapi
 from app.core.tracing import configure_langfuse, shutdown_langfuse
 from app.llm.provider import OpenAICompatibleProvider, StructuredGenerationProvider
@@ -162,6 +163,7 @@ def create_app(
     app.include_router(pipeline_router)
     app.include_router(dashboard_router)
     app.include_router(llm_gateway_router)  # OpenAI-compatible API for LibreChat
+    app.include_router(openai_gateway_router)  # OpenAI-compatible with function calling
     
     @app.get("/")
     def root() -> dict[str, str]:
