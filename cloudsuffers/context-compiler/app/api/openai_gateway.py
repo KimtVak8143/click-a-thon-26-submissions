@@ -240,50 +240,85 @@ async def chat_completions(
     
     user_query = user_messages[-1].content or ""
     
-    # Simple function calling logic
-    # In production, use the LLM to determine which function to call
     import json
     import time
     import uuid
     
-    # Route to appropriate tool based on keywords
+    # Use the LLM provider to determine intent and generate response
+    # For now, use keyword-based routing to demonstrate capability
     result_content = ""
     tool_calls_list = []
     
-    if "sql" in user_query.lower() or "query" in user_query.lower():
-        # Analyze SQL query
-        function_name = "analyze_clickhouse_query"
-        function_args = {"query": user_query, "context": "User query analysis"}
+    try:
+        # Route based on user intent
+        query_lower = user_query.lower()
         
-        tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
-        tool_calls_list.append(
-            ToolCall(
-                id=tool_call_id,
-                function={
-                    "name": function_name,
-                    "arguments": json.dumps(function_args),
-                },
+        if "context" in query_lower and "entities" in query_lower:
+            # Get context information from the context agent
+            logger.info("Fetching context entities")
+            result_content = (
+                "I can help you explore the approved context entities. "
+                "These are the data structures and metrics available for analysis.\n\n"
+                "Use the `/api/contexts/approved` endpoint to see all entities, "
+                "or specify an entity name to get detailed information."
             )
-        )
         
-        result_content = f"I've analyzed your SQL query. Here are the insights:\n\nQuery: {user_query}\n\nThis appears to be a ClickHouse query. Would you like me to provide optimization suggestions or explain what it does?"
+        elif "sql" in query_lower or "select" in query_lower:
+            # SQL query detected
+            result_content = (
+                "I can help you analyze or execute ClickHouse SQL queries.\n\n"
+                "**Available actions:**\n"
+                "- Analyze query performance and correctness\n"
+                "- Execute read-only SELECT queries\n"
+                "- Explain query structure and optimization opportunities\n\n"
+                "Please provide your SQL query or use the analysis endpoint."
+            )
+        
+        elif "contract" in query_lower or "analytics" in query_lower:
+            result_content = (
+                "I can help generate analytics contracts from feature specifications.\n\n"
+                "**What I need:**\n"
+                "1. Feature specification (user story or requirements)\n"
+                "2. List of events to track\n\n"
+                "Use the `/api/pipeline/run` endpoint with your specification to generate "
+                "entity definitions, metrics, and ClickHouse schema."
+            )
+        
+        elif "pipeline" in query_lower or "run" in query_lower:
+            result_content = (
+                "The Context Compiler pipeline transforms feature specifications into "
+                "production-ready analytics schemas.\n\n"
+                "**Pipeline stages:**\n"
+                "1. Parse specification and extract entities\n"
+                "2. Generate analytics contract with metrics\n"
+                "3. Create ClickHouse schema (DDL)\n"
+                "4. Update approved context\n\n"
+                "POST to `/api/pipeline/run` with your specification to start."
+            )
+        
+        else:
+            # General introduction
+            result_content = (
+                "👋 I'm the **Context Compiler** assistant!\n\n"
+                "I help you build data-driven features by:\n\n"
+                "**📊 Analytics Contracts** - Convert feature specs into entity definitions and metrics\n"
+                "**🗄️ SQL Analysis** - Analyze and optimize ClickHouse queries\n"
+                "**🔍 Data Exploration** - Execute queries and explore your data\n"
+                "**✅ Context Management** - Track approved entities and detect drift\n\n"
+                "**Available endpoints:**\n"
+                "- `/v1/chat/completions` - This chat interface\n"
+                "- `/api/pipeline/run` - Generate contracts from specifications\n"
+                "- `/api/contexts/approved` - View approved entities\n"
+                "- `/api/profiles/run` - Profile data sources\n\n"
+                "What would you like to do?"
+            )
     
-    elif "contract" in user_query.lower() or "analytics" in user_query.lower():
-        function_name = "generate_analytics_contract"
-        result_content = "I can help you generate an analytics contract. Please provide:\n1. Feature specification\n2. Events to track\n\nExample: 'Create contract for user checkout with events: checkout_started, payment_submitted, order_completed'"
-    
-    elif "context" in user_query.lower() or "entities" in user_query.lower():
-        function_name = "get_context_entities"
-        result_content = "Here are the available context entities:\n\n[This would list entities from the context repository]\n\nWould you like details about a specific entity?"
-    
-    else:
-        # General response
-        result_content = f"I'm the Context Compiler assistant. I can help you with:\n\n"
-        result_content += "1. **SQL Analysis** - Analyze ClickHouse queries for performance and correctness\n"
-        result_content += "2. **Analytics Contracts** - Generate entity definitions and metrics from feature specs\n"
-        result_content += "3. **Data Exploration** - Execute read-only queries on your ClickHouse database\n"
-        result_content += "4. **Context Management** - View approved entities and check for drift\n\n"
-        result_content += "What would you like to do?"
+    except Exception as e:
+        logger.error("chat_completion_error", error=str(e), user_query=user_query[:100])
+        result_content = (
+            f"I encountered an error processing your request: {str(e)}\n\n"
+            "Please try rephrasing your question or contact support if the issue persists."
+        )
     
     # Build response
     response = ChatCompletionResponse(
