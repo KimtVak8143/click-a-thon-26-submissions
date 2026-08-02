@@ -19,6 +19,29 @@ router = APIRouter(prefix="/mcp", tags=["mcp"])
 logger = get_logger(__name__)
 
 
+@router.get("")
+async def mcp_info() -> dict[str, Any]:
+    """Return MCP server information for GET requests (connection tests)."""
+    return {
+        "name": "context-compiler",
+        "version": "1.0.0",
+        "protocol": "mcp/2024-11-05",
+        "description": "Context Compiler MCP Server - Analytics Agent and Pipeline Tools",
+        "transport": "http",
+        "methods": ["tools/list", "tools/call", "resources/list", "initialize"],
+        "tools": [
+            {"name": "analytics_probe", "description": "Ask Analytics Agent questions with evidence"},
+            {"name": "latest_pipeline_runs", "description": "Get pipeline runs, schema timeline, and context changelog"}
+        ]
+    }
+
+
+@router.head("")
+async def mcp_head() -> None:
+    """Handle HEAD requests for connection tests."""
+    return None
+
+
 class MCPRequest(StrictModel):
     jsonrpc: str = Field(default="2.0")
     method: str
@@ -48,6 +71,16 @@ async def mcp_endpoint(request: Request, body: MCPRequest) -> MCPResponse:
     """
     method = body.method
     params = body.params or {}
+    
+    # Handle empty method (connection test)
+    if not method:
+        return MCPResponse(
+            id=body.id,
+            error={
+                "code": -32600,
+                "message": "Invalid Request: method is required",
+            },
+        )
 
     try:
         if method == "tools/list":
@@ -154,6 +187,22 @@ async def mcp_endpoint(request: Request, body: MCPRequest) -> MCPResponse:
             return MCPResponse(
                 id=body.id,
                 result={"resources": []},
+            )
+        
+        elif method == "ping" or method == "initialize":
+            # Handle connection test / initialization
+            return MCPResponse(
+                id=body.id,
+                result={
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {
+                        "name": "context-compiler",
+                        "version": "1.0.0"
+                    },
+                    "capabilities": {
+                        "tools": {}
+                    }
+                },
             )
 
         else:
