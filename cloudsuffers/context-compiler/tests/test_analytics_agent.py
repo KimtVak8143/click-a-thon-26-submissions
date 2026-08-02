@@ -79,25 +79,19 @@ def _default_query_map() -> dict[str, tuple[list[list[Any]], list[str]]]:
     return {
         "toMonday(timestamp)": (
             [["2026-07-01", 45]],
-            ["week", "unique_purchasers"],
+            ["week", "unique_entities"],
         ),
-        "GROUP BY device_type": (
-            [["ios", 100, 60.0], ["android", 50, 40.0]],
-            ["device_type", "users", "pct"],
+        "GROUP BY payment_currency": (
+            [["usd", 100, 60.0], ["eur", 50, 40.0]],
+            ["payment_currency", "entities", "pct"],
         ),
         "system.tables": (
             [[1]],
             ["count"],
         ),
-        "click_to_app_pct": (
-            [[100, 20, 5, 20.0, 25.0]],
-            [
-                "card_clicks",
-                "applications_started",
-                "purchases",
-                "click_to_app_pct",
-                "app_to_purchase_pct",
-            ],
+        "countDistinctIf": (
+            [[100, 20, 20.0]],
+            ["step_0_count", "step_1_count", "step_0_to_step_1_pct"],
         ),
     }
 

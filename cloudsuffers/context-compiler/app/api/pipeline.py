@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -155,7 +157,16 @@ async def run_pipeline(
                 }
             )
 
-        # 2. Context lookup
+        # 2 & 3. Context lookup + baseline metrics retrieval are independent ClickHouse
+        # reads. Start both threadpool calls now so they run concurrently; each is still
+        # awaited inside its own (sequential) tracer span below so span nesting stays correct.
+        context_task = asyncio.create_task(
+            run_in_threadpool(context_repository.latest_approved)
+        )
+        baseline_task = asyncio.create_task(
+            run_in_threadpool(baseline_metrics_service.precompute)
+        )
+
         approved_context = None
         with tracer.observe(
             "retrieve-approved-context",
@@ -163,7 +174,7 @@ async def run_pipeline(
             input={"feature_slug": feature_slug},
         ) as context_lookup_observation:
             try:
-                approved_context = await run_in_threadpool(context_repository.latest_approved)
+                approved_context = await context_task
             except Exception:
                 logger.warning("pipeline_context_lookup_failed")
                 approved_context = None
@@ -178,6 +189,9 @@ async def run_pipeline(
 
         if approved_context is None:
             errors.append("no approved context version is available")
+            baseline_task.cancel()
+            with suppress(Exception, asyncio.CancelledError):
+                await baseline_task
             return _finalize_response(
                 run_id=run_id,
                 feature_slug=feature_slug,
@@ -200,7 +214,7 @@ async def run_pipeline(
             input={"source_database": settings.clickhouse_database},
         ) as baseline_observation:
             try:
-                baseline_snapshot = await run_in_threadpool(baseline_metrics_service.precompute)
+                baseline_snapshot = await baseline_task
             except Exception:
                 logger.warning("pipeline_baseline_metrics_lookup_failed")
             baseline_observation.update(
@@ -307,6 +321,44 @@ async def run_pipeline(
                 extra={"error_type": type(exc).__name__},
             )
             errors.append("schema version could not be persisted")
+
+        # 5b. Load the observed events into the deployed table so the Analytics Agent
+        # has real evidence to query in this same run, instead of an empty table.
+        if schema_record.deployed_at is not None:
+            event_loader = request.app.state.event_loader
+            with tracer.observe(
+                "load-events",
+                as_type="span",
+                input={"feature_slug": feature_slug, "table_name": schema_record.table_name},
+            ) as load_observation:
+                try:
+                    ingestion_result = await run_in_threadpool(
+                        event_loader.load,
+                        contract=contract,
+                        events_path=temporary_path,
+                        database=settings.clickhouse_database,
+                        table_name=schema_record.table_name,
+                        columns=schema_planner.insertable_event_columns(contract),
+                    )
+                    load_observation.update(
+                        output={
+                            "rows_read": ingestion_result.rows_read,
+                            "rows_inserted": ingestion_result.rows_inserted,
+                            "rows_skipped": ingestion_result.rows_skipped,
+                        }
+                    )
+                    if ingestion_result.rows_skipped:
+                        errors.append(
+                            f"{ingestion_result.rows_skipped} event rows were skipped "
+                            "during ingestion (missing or unparseable timestamps)"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "pipeline_event_ingestion_failed",
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    load_observation.update(level="ERROR", status_message=type(exc).__name__)
+                    errors.append("observed events could not be loaded into the feature table")
 
         # 6. Update context
         updated_context = approved_context
@@ -521,6 +573,86 @@ async def _gate_recommendations(
     headers = {"authorization": f"Bearer {token.get_secret_value()}"} if token else {}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
 
+    async def _evaluate_insight(
+        client: httpx.AsyncClient, index: int, insight: FeatureInsight
+    ) -> tuple[FeatureInsight | None, str | None]:
+        cited = [evidence_by_id[item] for item in insight.evidence_ids if item in evidence_by_id]
+        sql = cited[0].sql if cited else "SELECT 0 WHERE 0"
+        recommendation_id = str(uuid.uuid5(result.run_id, f"{index}:{insight.title}"))
+        versions = {
+            "spec": {
+                "id": str(contract.source.spec_sha256),
+                "checksum": str(contract.source.spec_sha256),
+            },
+            "schema": {
+                "id": str(schema_record.schema_version_id),
+                "checksum": schema_checksum,
+            },
+            "businessContext": {
+                "id": context_version_id,
+                "checksum": context_checksum,
+            },
+        }
+        payload = {
+            "candidate": {
+                "id": recommendation_id,
+                "question": contract.feature.objective,
+                "text": f"{insight.title}. {insight.summary}",
+                "confidence": insight.confidence,
+                "featureSpec": feature_spec,
+                "businessContext": context.compact_json(),
+                "sql": sql,
+                "evidenceIds": [str(item.evidence_id) for item in cited],
+                "prompt": {
+                    "name": INSIGHTS_PROMPT_NAME,
+                    "version": INSIGHTS_PROMPT_VERSION,
+                },
+                "model": {
+                    "provider": "openai-compatible",
+                    "name": model_name,
+                    "version": model_name,
+                },
+                "versions": versions,
+            },
+            "currentVersions": {
+                **versions,
+                "businessContext": {
+                    "id": current_context_id,
+                    "checksum": current_context_checksum,
+                },
+            },
+            "evidence": [
+                {
+                    "id": str(item.evidence_id),
+                    "sql": item.sql,
+                    "rows": json.loads(item.result_json),
+                    "checksum": hashlib.sha256(item.result_json.encode("utf-8")).hexdigest(),
+                    "executedAt": result.generated_at.isoformat().replace("+00:00", "Z"),
+                    "latencyMs": item.latency_ms,
+                }
+                for item in cited
+            ],
+            "now": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "maxEvidenceAgeMs": settings.recommendation_max_evidence_age_ms,
+        }
+        try:
+            response = await client.post(
+                settings.recommendation_evaluator_url,
+                json=payload,
+                headers=headers,
+            )
+            decision = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.error(
+                "recommendation_gate_unavailable",
+                extra={"error_type": type(exc).__name__},
+            )
+            return None, "recommendation observability gate unavailable"
+        if response.status_code == 200 and decision.get("status") == "APPROVED":
+            return insight, None
+        block_status = str(decision.get("status", "BLOCKED_EVALUATION"))
+        return None, f"recommendation blocked: {block_status}"
+
     with tracer.observe(
         "recommendation_release_gate",
         as_type="agent",
@@ -528,89 +660,19 @@ async def _gate_recommendations(
         metadata={"boundary": "typescript-observability"},
     ) as gate_observation:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for index, insight in enumerate(result.insights):
-                cited = [
-                    evidence_by_id[item] for item in insight.evidence_ids if item in evidence_by_id
-                ]
-                sql = cited[0].sql if cited else "SELECT 0 WHERE 0"
-                recommendation_id = str(uuid.uuid5(result.run_id, f"{index}:{insight.title}"))
-                versions = {
-                    "spec": {
-                        "id": str(contract.source.spec_sha256),
-                        "checksum": str(contract.source.spec_sha256),
-                    },
-                    "schema": {
-                        "id": str(schema_record.schema_version_id),
-                        "checksum": schema_checksum,
-                    },
-                    "businessContext": {
-                        "id": context_version_id,
-                        "checksum": context_checksum,
-                    },
-                }
-                payload = {
-                    "candidate": {
-                        "id": recommendation_id,
-                        "question": contract.feature.objective,
-                        "text": f"{insight.title}. {insight.summary}",
-                        "confidence": insight.confidence,
-                        "featureSpec": feature_spec,
-                        "businessContext": context.compact_json(),
-                        "sql": sql,
-                        "evidenceIds": [str(item.evidence_id) for item in cited],
-                        "prompt": {
-                            "name": INSIGHTS_PROMPT_NAME,
-                            "version": INSIGHTS_PROMPT_VERSION,
-                        },
-                        "model": {
-                            "provider": "openai-compatible",
-                            "name": model_name,
-                            "version": model_name,
-                        },
-                        "versions": versions,
-                    },
-                    "currentVersions": {
-                        **versions,
-                        "businessContext": {
-                            "id": current_context_id,
-                            "checksum": current_context_checksum,
-                        },
-                    },
-                    "evidence": [
-                        {
-                            "id": str(item.evidence_id),
-                            "sql": item.sql,
-                            "rows": json.loads(item.result_json),
-                            "checksum": hashlib.sha256(
-                                item.result_json.encode("utf-8")
-                            ).hexdigest(),
-                            "executedAt": result.generated_at.isoformat().replace("+00:00", "Z"),
-                            "latencyMs": item.latency_ms,
-                        }
-                        for item in cited
-                    ],
-                    "now": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                    "maxEvidenceAgeMs": settings.recommendation_max_evidence_age_ms,
-                }
-                try:
-                    response = await client.post(
-                        settings.recommendation_evaluator_url,
-                        json=payload,
-                        headers=headers,
-                    )
-                    decision = response.json()
-                except (httpx.HTTPError, ValueError) as exc:
-                    logger.error(
-                        "recommendation_gate_unavailable",
-                        extra={"error_type": type(exc).__name__},
-                    )
-                    errors.append("recommendation observability gate unavailable")
-                    continue
-                if response.status_code == 200 and decision.get("status") == "APPROVED":
-                    approved.append(insight)
-                else:
-                    block_status = str(decision.get("status", "BLOCKED_EVALUATION"))
-                    errors.append(f"recommendation blocked: {block_status}")
+            # Each insight's evaluation is an independent HTTP round trip to the
+            # evaluator service, so run them concurrently instead of one-at-a-time.
+            outcomes = await asyncio.gather(
+                *(
+                    _evaluate_insight(client, index, insight)
+                    for index, insight in enumerate(result.insights)
+                )
+            )
+        for insight, error_message in outcomes:
+            if insight is not None:
+                approved.append(insight)
+            if error_message is not None:
+                errors.append(error_message)
         gate_observation.update(
             output={"approved": len(approved), "blocked": len(result.insights) - len(approved)}
         )

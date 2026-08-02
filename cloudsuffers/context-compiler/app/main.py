@@ -15,6 +15,7 @@ from app.api.health import router as health_router
 from app.api.pipeline import router as pipeline_router
 from app.api.profiles import router as profiles_router
 from app.clickhouse.client import build_clickhouse_client
+from app.clickhouse.event_loader import EventLoader
 from app.clickhouse.repository import ClickHouseHealthRepository
 from app.context.repository import ClickHouseContextRepository, ContextRepositoryProtocol
 from app.core.config import Settings, get_settings
@@ -37,6 +38,7 @@ def create_app(
     context_agent: ContextAgent | None = None,
     analytics_agent: AnalyticsAgent | None = None,
     baseline_metrics_service: BaselineMetricsService | None = None,
+    event_loader: EventLoader | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings.log_level)
@@ -82,6 +84,9 @@ def create_app(
         lambda: build_clickhouse_client(app_settings),
         app_settings.clickhouse_database,
         app_settings.clickhouse_metadata_database,
+    )
+    event_loader_instance = event_loader or EventLoader(
+        lambda: build_clickhouse_client(app_settings),
     )
 
     @asynccontextmanager
@@ -129,6 +134,10 @@ def create_app(
                 baseline_metrics_instance.close()
             except Exception:
                 logger.warning("baseline_metrics_shutdown_failed")
+            try:
+                event_loader_instance.close()
+            except Exception:
+                logger.warning("event_loader_shutdown_failed")
             shutdown_langfuse(application.state.langfuse)
             logger.info("application_stopped")
 
@@ -154,6 +163,7 @@ def create_app(
     app.state.context_agent = context_agent_instance
     app.state.analytics_agent = analytics_agent_instance
     app.state.baseline_metrics = baseline_metrics_instance
+    app.state.event_loader = event_loader_instance
     app.state.langfuse = None
     app.include_router(health_router)
     app.include_router(profiles_router)

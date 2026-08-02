@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.agents.analytics import AnalyticsAgent
 from app.agents.context_agent import ContextAgent
 from app.agents.schema_planner import SchemaPlanner
+from app.clickhouse.event_loader import EventLoader
 from app.context.bootstrap import build_base_context_bundle
 from app.context.repository import InMemoryContextRepository
 from app.core.config import Settings
@@ -90,6 +91,7 @@ def _stub_backed_app(
             settings.clickhouse_database,
             settings.clickhouse_metadata_database,
         ),
+        event_loader=EventLoader(factory),
     )
 
 
@@ -135,6 +137,38 @@ def test_pipeline_run_end_to_end_returns_completed_run() -> None:
     assert client.commands == []
     assert body["context_version_id"]
     assert isinstance(body["insights"], list)
+
+
+def test_pipeline_run_ingests_observed_events_when_not_dry_run() -> None:
+    profile = SourceProfiler().profile(EVENTS)
+    contract_json = encoded(contract_data(profile))
+    insights_response = json.dumps({"insights": []})
+    provider = FakeStructuredGenerationProvider([contract_json, insights_response])
+    client = StubClient()
+    app = _stub_backed_app(provider, client)
+
+    with TestClient(app) as http:
+        response = http.post(
+            "/pipeline/run",
+            files={
+                "spec": ("feature.md", SPEC.encode(), "text/markdown"),
+                "events": ("events.ndjson", EVENTS.read_bytes(), "application/x-ndjson"),
+            },
+            data={"dry_run": "false"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["schema_plan"]["deployed"] is True
+    assert client.commands  # DDL was executed for a real deploy.
+
+    event_inserts = [
+        insert for insert in client.inserts if insert[0] == "`default`.`express_checkout_events`"
+    ]
+    assert event_inserts
+    total_rows = sum(len(rows) for _, rows, _ in event_inserts)
+    assert total_rows == profile.file.valid_row_count
 
 
 def test_pipeline_run_reports_blocked_contract_without_deploying() -> None:
