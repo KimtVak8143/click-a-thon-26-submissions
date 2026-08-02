@@ -20,7 +20,7 @@ from app.clickhouse.client import build_clickhouse_client
 from app.clickhouse.repository import ClickHouseHealthRepository
 from app.context.repository import ClickHouseContextRepository, ContextRepositoryProtocol
 from app.core.config import Settings, get_settings
-from app.core.logging import configure_logging, get_loggerx
+from app.core.logging import configure_logging, get_logger
 from app.core.metrics import configure_otel, instrument_fastapi
 from app.core.tracing import configure_langfuse, shutdown_langfuse
 from app.llm.provider import OpenAICompatibleProvider, StructuredGenerationProvider

@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 
 from app.agents.analytics import AnalyticsAgent
 from app.agents.context_agent import ContextAgent
-from app.core.logging import get_loggerx
+from app.core.logging import get_logger
 from app.llm.provider import StructuredGenerationProvider
 
 router = APIRouter(prefix="/v1", tags=["openai-gateway"])
-logger = get_loggerx(__name__)
+logger = get_logger(__name__)
 
 
 # OpenAI API Models
