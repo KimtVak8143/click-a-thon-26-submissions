@@ -9,6 +9,7 @@ from app.agents.analytics import AnalyticsAgent
 from app.agents.context_agent import ContextAgent
 from app.agents.instrumentation import InstrumentationAgent
 from app.agents.schema_planner import SchemaPlanner
+from app.api.analytics import router as analytics_router
 from app.api.contracts import router as contracts_router
 from app.api.dashboard import router as dashboard_router
 from app.api.health import router as health_router
@@ -170,6 +171,7 @@ def create_app(
     app.include_router(contracts_router)
     app.include_router(pipeline_router)
     app.include_router(dashboard_router)
+    app.include_router(analytics_router)
     
     @app.get("/")
     def root() -> dict[str, str]:

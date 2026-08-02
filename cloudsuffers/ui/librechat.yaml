@@ -14,3 +14,30 @@ interface:
   webSearch: false
 registration:
   socialLogins: []
+mcpSettings:
+  # Without this, LibreChat's SSRF protection blocks any MCP server URL that
+  # resolves to a private/internal address by default — which both the
+  # mcp-clickhouse container's docker-network hostname and host.docker.internal
+  # (the backend, running on the host, not in this compose stack) always will.
+  allowedDomains:
+    - http://mcp-clickhouse:8001
+    - http://host.docker.internal:8002
+mcpServers:
+  # Generic, ad-hoc read-only ClickHouse SQL access — no idea what a "feature",
+  # "contract", or "context version" is.
+  clickhouse:
+    type: streamable-http
+    url: http://mcp-clickhouse:8001/mcp
+    timeout: 60000
+    chatMenu: true
+  # The Context Compiler's own Analytics Agent + context layer, via the backend's
+  # own /analytics/probe and /dashboard endpoints (run: `uv run python -m
+  # app.mcp_server` from context-compiler/, alongside the backend). Prefer this
+  # for anything about a feature's funnel, conversions, trends, or context
+  # freshness — it answers grounded in the same context version and evidence the
+  # compiler's own pipeline runs use, with a real Langfuse trace per call.
+  context-compiler:
+    type: streamable-http
+    url: http://host.docker.internal:8002/mcp
+    timeout: 120000
+    chatMenu: true

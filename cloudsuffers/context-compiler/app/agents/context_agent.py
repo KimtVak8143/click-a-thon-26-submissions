@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.agents.schema_planner import SchemaVersionRecord
+from app.clickhouse.introspection import list_columns
 from app.context.models import ApprovedContext
 from app.context.repository import ContextRepositoryProtocol
 from app.contracts.models import AnalyticsContract, EntityRole
@@ -48,7 +49,9 @@ class ContextAgent:
         base_context: ApprovedContext,
         run_id: uuid.UUID,
     ) -> ApprovedContext:
-        columns = self._introspect_columns(schema_record.database_name, schema_record.table_name)
+        columns = list_columns(
+            self._get_client(), schema_record.database_name, schema_record.table_name
+        )
         primary_entity_key = _primary_entity_key(contract)
         events = sorted({event.name for event in contract.events})
         created_at = datetime.now(UTC)
@@ -134,28 +137,6 @@ class ContextAgent:
         if self._client is None:
             self._client = self._client_factory()
         return self._client
-
-    def _introspect_columns(self, database: str, table_name: str) -> list[dict[str, str]]:
-        try:
-            client = self._get_client()
-            result = client.query(
-                "SELECT name, type FROM system.columns "
-                "WHERE database = {database:String} AND table = {table:String} "
-                "ORDER BY position",
-                parameters={"database": database, "table": table_name},
-            )
-        except Exception:
-            logger.warning(
-                "context_agent_column_introspection_failed",
-                extra={"database": database, "table": table_name},
-            )
-            return []
-        columns = []
-        for row in result.result_rows:
-            if len(row) < 2:
-                continue
-            columns.append({"name": str(row[0]), "type": str(row[1])})
-        return columns
 
     def _insert_context_version(
         self,

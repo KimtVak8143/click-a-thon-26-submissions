@@ -240,3 +240,191 @@ def test_analytics_agent_rejects_unsafe_database_names() -> None:
             analytical_database="clickathon1",
             metadata_database="drop; --",
         )
+
+
+class _ProbeQueryResult:
+    def __init__(self, rows: list[list[Any]], columns: list[str]) -> None:
+        self.result_rows = rows
+        self.column_names = columns
+
+
+class _ProbeClient:
+    """Fake ClickHouse client that answers system.tables/system.columns
+    introspection from a fixed table->columns map, plus a pattern-matched
+    query_map for the actual evidence queries."""
+
+    def __init__(
+        self,
+        tables: dict[str, list[str]],
+        query_map: dict[str, tuple[list[list[Any]], list[str]]] | None = None,
+    ) -> None:
+        self._tables = tables
+        self._query_map = query_map or {}
+        self.queries: list[tuple[str, dict[str, Any]]] = []
+
+    def query(self, statement: str, parameters: dict[str, Any] | None = None) -> _ProbeQueryResult:
+        parameters = parameters or {}
+        self.queries.append((statement, parameters))
+        if "system.tables" in statement:
+            return _ProbeQueryResult([[name] for name in self._tables], ["name"])
+        if "system.columns" in statement:
+            table = parameters.get("table")
+            columns = self._tables.get(table, [])
+            return _ProbeQueryResult([[name, "String"] for name in columns], ["name", "type"])
+        for pattern, (rows, columns) in self._query_map.items():
+            if pattern in statement:
+                return _ProbeQueryResult(rows, columns)
+        return _ProbeQueryResult([], [])
+
+
+def _probe_answer(answer: str, findings: list[dict[str, Any]]) -> str:
+    return json.dumps({"answer": answer, "findings": findings})
+
+
+def test_run_probe_discovers_tables_structurally_and_answers() -> None:
+    tables = {
+        "express_checkout_events": [
+            "id",
+            "timestamp",
+            "event_name",
+            "application_id",
+            "device_type",
+        ],
+        "some_materialized_view": ["date", "event_name", "unique_entity_count"],
+        "otel_metrics_sum": ["ServiceName", "MetricName"],
+    }
+    client = _ProbeClient(tables)
+    provider = FakeStructuredGenerationProvider(
+        [
+            _probe_answer(
+                "Conversion drops sharply after the first funnel step.",
+                [
+                    {
+                        "title": "Large drop after checkout shown",
+                        "summary": "Most users never proceed past the first step.",
+                        "confidence": 0.8,
+                        "category": "funnel",
+                        "evidence_ids": ["express_checkout_events:event_breakdown"],
+                    }
+                ],
+            )
+        ]
+    )
+    agent = AnalyticsAgent(
+        provider=provider,
+        client_factory=lambda: client,
+        analytical_database="clickathon1",
+        metadata_database="compiler_meta",
+    )
+    context = _approved_context()
+    assert context is not None
+
+    result = asyncio.run(
+        agent.run_probe(
+            "Analyze the existing funnel and surface the most important issues, with the why.",
+            context,
+            uuid.uuid4(),
+        )
+    )
+
+    # The materialized view (no timestamp column) and the otel table (no event
+    # columns) must not be mistaken for event tables.
+    assert result.tables_examined == ["express_checkout_events"]
+    assert result.answer == "Conversion drops sharply after the first funnel step."
+    assert len(result.findings) == 1
+    assert result.findings[0].evidence_ids == [
+        str(item.evidence_id)
+        for item in result.query_evidence
+        if item.metric_name == "express_checkout_events:event_breakdown"
+    ]
+    # Only device_type is present among the segment candidates.
+    segment_metrics = {item.metric_name for item in result.query_evidence}
+    assert "express_checkout_events:segment_device_type" in segment_metrics
+    assert "express_checkout_events:segment_geoip_country_code" not in segment_metrics
+
+
+def test_run_probe_prefers_context_registered_tables() -> None:
+    tables = {"group_family_events": ["id", "timestamp", "event", "user_id"]}
+    client = _ProbeClient(tables)
+    provider = FakeStructuredGenerationProvider([_probe_answer("No major issues found.", [])])
+    agent = AnalyticsAgent(
+        provider=provider,
+        client_factory=lambda: client,
+        analytical_database="clickathon1",
+        metadata_database="compiler_meta",
+    )
+    context = _approved_context()
+    assert context is not None
+    context.projection["feature_tables"] = [{"table_name": "group_family_events"}]
+
+    result = asyncio.run(
+        agent.run_probe("Where are we losing conversions?", context, uuid.uuid4())
+    )
+
+    assert result.tables_examined == ["group_family_events"]
+
+
+def test_run_probe_context_audit_mode_skips_clickhouse_entirely() -> None:
+    client = _ProbeClient(tables={})
+    provider = FakeStructuredGenerationProvider(
+        [
+            _probe_answer(
+                "The base context declares a conflicting grain policy.",
+                [
+                    {
+                        "title": "Conflicting grain policy",
+                        "summary": "Two entities declare incompatible grains.",
+                        "confidence": 0.6,
+                        "category": "context",
+                        "evidence_ids": [],
+                    }
+                ],
+            )
+        ]
+    )
+    agent = AnalyticsAgent(
+        provider=provider,
+        client_factory=lambda: client,
+        analytical_database="clickathon1",
+        metadata_database="compiler_meta",
+    )
+    context = _approved_context()
+    assert context is not None
+
+    result = asyncio.run(
+        agent.run_probe(
+            "Is anything in the base context wrong, stale, or self-contradictory?",
+            context,
+            uuid.uuid4(),
+            mode="context_audit",
+        )
+    )
+
+    assert result.mode == "context_audit"
+    assert result.tables_examined == []
+    assert result.query_evidence == []
+    assert client.queries == []  # no ClickHouse touched at all
+    assert len(result.findings) == 1
+    assert result.findings[0].category == "context"
+
+
+def test_run_probe_returns_empty_findings_when_provider_fails() -> None:
+    client = _ProbeClient(tables={})
+    provider = FakeStructuredGenerationProvider(
+        [ProviderError(ProviderFailureCategory.CONNECTION_ERROR, "no llm")]
+    )
+    agent = AnalyticsAgent(
+        provider=provider,
+        client_factory=lambda: client,
+        analytical_database="clickathon1",
+        metadata_database="compiler_meta",
+    )
+    context = _approved_context()
+    assert context is not None
+
+    result = asyncio.run(
+        agent.run_probe("Any regressions?", context, uuid.uuid4(), mode="context_audit")
+    )
+
+    assert result.findings == []
+    assert result.answer
