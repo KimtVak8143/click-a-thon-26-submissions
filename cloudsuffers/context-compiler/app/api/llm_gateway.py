@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.services.context_agent import context_agent
 from app.services.analytics_agent import analytics_agent
-from app.clickhouse.client import get_clickhouse_client
+from app.clickhouse.client import build_clickhouse_client
 import json
 import asyncio
 
@@ -240,7 +240,7 @@ async def execute_tool(tool_name: str, arguments: dict[str, Any]) -> str:
                 })
             
             # Execute actual query
-            client = get_clickhouse_client(settings)
+            client = build_clickhouse_client(settings)
             rows = client.execute_query(query)
             return json.dumps({"rows": rows[:100], "count": len(rows)}, indent=2)
         
