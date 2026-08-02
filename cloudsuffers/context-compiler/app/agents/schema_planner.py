@@ -24,6 +24,13 @@ class SchemaStrategy:
     ddl_statements: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EventTableColumn:
+    name: str
+    sql_type: str
+    insertable: bool
+
+
 @dataclass
 class SchemaVersionRecord:
     schema_version_id: UUID
@@ -224,19 +231,26 @@ class SchemaPlanner:
         safe_slug = _safe_identifier(feature_slug)
         return f"{safe_slug}_events"
 
-    def _build_event_table_ddl(self, contract: AnalyticsContract, table_name: str) -> str:
-        primary_key = _primary_entity_key(contract)
+    def event_table_columns(self, contract: AnalyticsContract) -> list[EventTableColumn]:
+        """Single source of truth for the event table's shape.
+
+        Shared by DDL generation and event ingestion so the two can never drift apart.
+        """
         observed_paths = {
             definition.source_path for definition in contract.fields if not definition.spec_only
         }
-        columns: list[str] = [
-            "id UUID",
-            "timestamp DateTime64(3, 'UTC')",
-            "_ingested_at DateTime64(3, 'UTC') DEFAULT now64(3)",
+        columns: list[EventTableColumn] = [
+            EventTableColumn("id", "UUID", insertable=True),
+            EventTableColumn("timestamp", "DateTime64(3, 'UTC')", insertable=True),
+            EventTableColumn(
+                "_ingested_at", "DateTime64(3, 'UTC') DEFAULT now64(3)", insertable=False
+            ),
         ]
         seen: set[str] = {"id", "timestamp", "_ingested_at"}
         if "event_name" in observed_paths:
-            columns.append("event_name LowCardinality(String)")
+            columns.append(
+                EventTableColumn("event_name", "LowCardinality(String)", insertable=True)
+            )
             seen.add("event_name")
         for definition in contract.fields:
             if definition.spec_only:
@@ -245,15 +259,38 @@ class SchemaPlanner:
             if column_name in seen:
                 continue
             seen.add(column_name)
-            columns.append(f"{column_name} {definition.clickhouse_type}")
+            columns.append(
+                EventTableColumn(column_name, definition.clickhouse_type, insertable=True)
+            )
         if "event_name" not in seen:
             if "event" in seen:
                 columns.append(
-                    "event_name LowCardinality(String) MATERIALIZED toLowCardinality(event)"
+                    EventTableColumn(
+                        "event_name",
+                        "LowCardinality(String) MATERIALIZED toLowCardinality(event)",
+                        insertable=False,
+                    )
                 )
             else:
-                columns.append("event_name LowCardinality(String)")
-        columns_block = ",\n    ".join(columns)
+                columns.append(
+                    EventTableColumn("event_name", "LowCardinality(String)", insertable=True)
+                )
+        return columns
+
+    def insertable_event_columns(
+        self, contract: AnalyticsContract
+    ) -> list[tuple[str, str]]:
+        """(column_name, clickhouse_type) pairs safe to target with an INSERT."""
+        return [
+            (column.name, column.sql_type)
+            for column in self.event_table_columns(contract)
+            if column.insertable
+        ]
+
+    def _build_event_table_ddl(self, contract: AnalyticsContract, table_name: str) -> str:
+        primary_key = _primary_entity_key(contract)
+        columns = self.event_table_columns(contract)
+        columns_block = ",\n    ".join(f"{column.name} {column.sql_type}" for column in columns)
         order_by = (
             f"({primary_key}, event_name, timestamp)" if primary_key else "(event_name, timestamp)"
         )

@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.agents.schema_planner import _primary_entity_key, _safe_identifier
 from app.context.models import ApprovedContext
 from app.contracts.models import AnalyticsContract
 from app.core.logging import get_logger
@@ -224,10 +225,16 @@ class AnalyticsAgent:
             metadata={"stage": "query_execution"},
             tags=["clickhouse", "queries"],
         ) as queries_observation:
-            queries: list[tuple[str, str, dict[str, Any]]] = [
-                ("baseline_funnel", self._baseline_funnel_sql(), {}),
-                ("weekly_trend_purchases", self._weekly_trend_sql(), {}),
-                ("top_segments_device_type", self._top_segments_sql(), {}),
+            queries: list[tuple[str, str, dict[str, Any]]] = []
+            funnel_sql, funnel_params = self._baseline_funnel_sql(contract)
+            if funnel_sql:
+                queries.append(("baseline_funnel", funnel_sql, funnel_params))
+            trend_sql, trend_params = self._weekly_trend_sql(contract)
+            queries.append(("weekly_trend_purchases", trend_sql, trend_params))
+            segment_sql, segment_params = self._top_segments_sql(contract)
+            if segment_sql:
+                queries.append(("top_segments_device_type", segment_sql, segment_params))
+            queries.append(
                 (
                     "feature_table_ready",
                     self._feature_table_ready_sql(),
@@ -235,8 +242,8 @@ class AnalyticsAgent:
                         "db": self._analytical_database,
                         "table": self._feature_table_name(contract.feature.slug),
                     },
-                ),
-            ]
+                )
+            )
             evidence: list[QueryEvidence] = []
             for metric_name, sql, parameters in queries:
                 evidence.append(self._run_query_evidence(metric_name, sql, parameters, tracer))
@@ -427,47 +434,70 @@ class AnalyticsAgent:
             schema_name="feature_insights_1_0",
         )
 
-    def _baseline_funnel_sql(self) -> str:
-        db = self._analytical_database
-        return (
-            "SELECT\n"
-            "    countDistinctIf(user_id, event_name = 'destination_card_clicked') "
-            "AS card_clicks,\n"
-            "    countDistinctIf(user_id, event_name = 'application_started') "
-            "AS applications_started,\n"
-            "    countDistinctIf(user_id, event_name = 'purchase_completed') AS purchases,\n"
-            "    round(countDistinctIf(user_id, event_name = 'application_started') "
-            "* 100.0 / nullIf(countDistinctIf(user_id, "
-            "event_name = 'destination_card_clicked'), 0), 2) AS click_to_app_pct,\n"
-            "    round(countDistinctIf(user_id, event_name = 'purchase_completed') "
-            "* 100.0 / nullIf(countDistinctIf(user_id, "
-            "event_name = 'application_started'), 0), 2) AS app_to_purchase_pct\n"
-            "FROM (\n"
-            f"    SELECT user_id, 'destination_card_clicked' AS event_name FROM `{db}`."
-            "`destination_card_clicked`\n"
-            f"    UNION ALL SELECT user_id, 'application_started' FROM `{db}`."
-            "`application_started`\n"
-            f"    UNION ALL SELECT user_id, 'purchase_completed' FROM `{db}`."
-            "`purchase_completed`\n"
-            ")"
+    def _baseline_funnel_sql(
+        self, contract: AnalyticsContract
+    ) -> tuple[str, dict[str, Any]]:
+        if not contract.funnels:
+            return "", {}
+        primary_key = _primary_entity_key(contract) or "id"
+        table = self._feature_table_name(contract.feature.slug)
+        steps = sorted(contract.funnels[0].steps, key=lambda step: step.order)
+        parameters: dict[str, Any] = {}
+        select_parts: list[str] = []
+        for index, step in enumerate(steps):
+            parameters[f"step_{index}"] = step.event_name
+            select_parts.append(
+                f"countDistinctIf({primary_key}, event_name = {{step_{index}:String}}) "
+                f"AS step_{index}_count"
+            )
+        for index in range(1, len(steps)):
+            select_parts.append(
+                f"round(countDistinctIf({primary_key}, event_name = {{step_{index}:String}}) "
+                f"* 100.0 / nullIf(countDistinctIf({primary_key}, "
+                f"event_name = {{step_{index - 1}:String}}), 0), 2) "
+                f"AS step_{index - 1}_to_step_{index}_pct"
+            )
+        select_clause = ",\n    ".join(select_parts)
+        where_clause = " OR ".join(
+            f"event_name = {{step_{index}:String}}" for index in range(len(steps))
         )
-
-    def _weekly_trend_sql(self) -> str:
-        db = self._analytical_database
-        return (
-            "SELECT toMonday(timestamp) AS week, count(DISTINCT user_id) AS unique_purchasers\n"
-            f"FROM `{db}`.`purchase_completed`\n"
-            "GROUP BY week ORDER BY week DESC LIMIT 4"
+        sql = (
+            f"SELECT\n    {select_clause}\n"
+            f"FROM `{self._analytical_database}`.`{table}`\n"
+            f"WHERE {where_clause}"
         )
+        return sql, parameters
 
-    def _top_segments_sql(self) -> str:
-        db = self._analytical_database
+    def _weekly_trend_sql(self, contract: AnalyticsContract) -> tuple[str, dict[str, Any]]:
+        primary_key = _primary_entity_key(contract) or "id"
+        table = self._feature_table_name(contract.feature.slug)
+        parameters: dict[str, Any] = {}
+        where_clause = ""
+        if contract.funnels:
+            terminal_step = max(contract.funnels[0].steps, key=lambda step: step.order)
+            parameters["terminal_event"] = terminal_step.event_name
+            where_clause = "WHERE event_name = {terminal_event:String}\n"
         return (
-            "SELECT device_type, count(DISTINCT user_id) AS users, "
+            "SELECT toMonday(timestamp) AS week, "
+            f"count(DISTINCT {primary_key}) AS unique_entities\n"
+            f"FROM `{self._analytical_database}`.`{table}`\n"
+            f"{where_clause}"
+            "GROUP BY week ORDER BY week DESC LIMIT 8"
+        ), parameters
+
+    def _top_segments_sql(self, contract: AnalyticsContract) -> tuple[str, dict[str, Any]]:
+        if not contract.dimensions:
+            return "", {}
+        dimension_column = _safe_identifier(contract.dimensions[0].field_path)
+        primary_key = _primary_entity_key(contract) or "id"
+        table = self._feature_table_name(contract.feature.slug)
+        sql = (
+            f"SELECT {dimension_column}, count(DISTINCT {primary_key}) AS entities, "
             "round(count() * 100.0 / sum(count()) OVER (), 2) AS pct\n"
-            f"FROM `{db}`.`application_started`\n"
-            "GROUP BY device_type ORDER BY users DESC LIMIT 5"
+            f"FROM `{self._analytical_database}`.`{table}`\n"
+            f"GROUP BY {dimension_column} ORDER BY entities DESC LIMIT 5"
         )
+        return sql, {}
 
     def _feature_table_ready_sql(self) -> str:
         return (

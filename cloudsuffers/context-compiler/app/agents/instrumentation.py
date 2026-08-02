@@ -1305,10 +1305,34 @@ def _normalize_deterministic_candidate(
         observed_in = field_profiles[boolean_field].observed_in_events
         boolean_event = observed_in[0] if observed_in else None
 
+    dimensions = candidate.get("dimensions")
+    if not isinstance(dimensions, list):
+        dimensions = []
+        candidate["dimensions"] = dimensions
+    dimension_field_paths = {
+        item.get("field_path") for item in dimensions if isinstance(item, dict)
+    }
+
     failure_metrics = 0
     for metric in metrics:
         if not isinstance(metric, dict):
             continue
+        currency_field = metric.get("currency_dimension_field")
+        if (
+            metric.get("value_type") == "currency"
+            and isinstance(currency_field, str)
+            and currency_field not in dimension_field_paths
+            and currency_field in observed_fields
+        ):
+            dimensions.append(
+                {
+                    "field_path": currency_field,
+                    "purpose": f"Currency code used to interpret {currency_field} amounts.",
+                    "null_handling": "keep",
+                }
+            )
+            dimension_field_paths.add(currency_field)
+            counts["currency_dimensions_added"] = counts.get("currency_dimensions_added", 0) + 1
         semantic_text = (
             f"{metric.get('id', '')} {metric.get('name', '')} "
             f"{metric.get('description', '')}".casefold()

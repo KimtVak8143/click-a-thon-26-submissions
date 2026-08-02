@@ -322,6 +322,44 @@ async def run_pipeline(
             )
             errors.append("schema version could not be persisted")
 
+        # 5b. Load the observed events into the deployed table so the Analytics Agent
+        # has real evidence to query in this same run, instead of an empty table.
+        if schema_record.deployed_at is not None:
+            event_loader = request.app.state.event_loader
+            with tracer.observe(
+                "load-events",
+                as_type="span",
+                input={"feature_slug": feature_slug, "table_name": schema_record.table_name},
+            ) as load_observation:
+                try:
+                    ingestion_result = await run_in_threadpool(
+                        event_loader.load,
+                        contract=contract,
+                        events_path=temporary_path,
+                        database=settings.clickhouse_database,
+                        table_name=schema_record.table_name,
+                        columns=schema_planner.insertable_event_columns(contract),
+                    )
+                    load_observation.update(
+                        output={
+                            "rows_read": ingestion_result.rows_read,
+                            "rows_inserted": ingestion_result.rows_inserted,
+                            "rows_skipped": ingestion_result.rows_skipped,
+                        }
+                    )
+                    if ingestion_result.rows_skipped:
+                        errors.append(
+                            f"{ingestion_result.rows_skipped} event rows were skipped "
+                            "during ingestion (missing or unparseable timestamps)"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "pipeline_event_ingestion_failed",
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    load_observation.update(level="ERROR", status_message=type(exc).__name__)
+                    errors.append("observed events could not be loaded into the feature table")
+
         # 6. Update context
         updated_context = approved_context
         with tracer.observe(
