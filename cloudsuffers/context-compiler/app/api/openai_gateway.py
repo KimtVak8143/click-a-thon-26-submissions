@@ -5,7 +5,7 @@ Enables any AI chat interface to access Context Compiler capabilities.
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.agents.analytics import AnalyticsAgent
@@ -15,6 +15,22 @@ from app.llm.provider import StructuredGenerationProvider
 
 router = APIRouter(prefix="/v1", tags=["openai-gateway"])
 logger = get_logger(__name__)
+
+
+# Dependency injection functions
+def get_analytics_agent(request: Request) -> AnalyticsAgent:
+    """Get AnalyticsAgent from app state."""
+    return request.app.state.analytics_agent
+
+
+def get_context_agent(request: Request) -> ContextAgent:
+    """Get ContextAgent from app state."""
+    return request.app.state.context_agent
+
+
+def get_llm_provider(request: Request) -> StructuredGenerationProvider:
+    """Get LLM provider from app state."""
+    return request.app.state.llm_provider
 
 
 # OpenAI API Models
@@ -197,9 +213,9 @@ async def list_models():
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
     request: ChatCompletionRequest,
-    analytics_agent: AnalyticsAgent,
-    context_agent: ContextAgent,
-    provider: StructuredGenerationProvider,
+    analytics_agent: AnalyticsAgent = Depends(get_analytics_agent),
+    context_agent: ContextAgent = Depends(get_context_agent),
+    provider: StructuredGenerationProvider = Depends(get_llm_provider),
 ):
     """
     OpenAI-compatible chat completions endpoint with function calling.
