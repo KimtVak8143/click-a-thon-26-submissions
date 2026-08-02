@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+        ]
     )
     cors_allow_credentials: bool = False
 
@@ -106,18 +111,29 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr | None = None
     langfuse_base_url: str = "https://cloud.langfuse.com"
 
+    recommendation_evaluator_url: str | None = None
+    recommendation_evaluator_auth_token: SecretStr | None = None
+    recommendation_max_evidence_age_ms: int = Field(default=86_400_000, gt=0)
+
     @field_validator(
         "clickhouse_username",
         "langfuse_public_key",
         "llm_base_url",
         "llm_model",
+        "recommendation_evaluator_url",
         mode="before",
     )
     @classmethod
     def empty_string_is_none(cls, value: object) -> object:
         return None if value == "" else value
 
-    @field_validator("clickhouse_password", "langfuse_secret_key", "llm_api_key", mode="before")
+    @field_validator(
+        "clickhouse_password",
+        "langfuse_secret_key",
+        "llm_api_key",
+        "recommendation_evaluator_auth_token",
+        mode="before",
+    )
     @classmethod
     def empty_secret_is_none(cls, value: object) -> object:
         return None if value == "" else value
@@ -174,6 +190,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "cors_allow_credentials cannot be enabled with a wildcard allowed origin"
             )
+        if self.recommendation_evaluator_url is not None:
+            parsed = urlsplit(self.recommendation_evaluator_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("recommendation_evaluator_url must be an HTTP(S) URL")
+        if self.app_env.lower() == "production" and self.recommendation_evaluator_url is None:
+            raise ValueError("recommendation_evaluator_url is required in production")
         return self
 
     @property

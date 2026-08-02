@@ -1,0 +1,48 @@
+# Railway ignore file - exclude unnecessary files from deployment
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+env/
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Runtime
+.run/
+*.log
+*.pid
+
+# Development only
+tests/
+scripts/setup-and-run.sh
+.git/
+.gitignore

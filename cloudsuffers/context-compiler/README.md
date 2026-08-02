@@ -4,8 +4,81 @@ Phase 0, Phase 1A, and Phase 2A backend foundation for Context Compiler. This se
 typed environment configuration, structured JSON logs, optional Langfuse setup, ClickHouse
 connectivity, metadata migrations, health endpoints, a streaming NDJSON source profiler, strict
 canonical analytics-contract models, and provider-neutral Instrumentation Agent contract
-generation. It intentionally contains no DDL generation or execution, event ingestion, Context
-Agent, Analytics Agent, or frontend code.
+generation. It also includes an OpenTelemetry-first TypeScript observability and evaluation
+subsystem that gates, scores, and persists product recommendations with complete provenance.
+
+## 🚂 Railway Deployment
+
+**Ready to deploy?** 
+
+- **Production Guide**: [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) - Complete production deployment guide
+- **Railway Specific**: [RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md) - Railway-specific instructions
+
+Quick deploy checklist:
+- ✅ ClickHouse database ready
+- ✅ LLM provider API key
+- ✅ Environment variables configured
+- ✅ Deploy from GitHub repo
+
+## 🐳 Docker Deployment
+
+### Build Docker Image
+
+```bash
+docker build -t context-compiler:latest .
+```
+
+### Run Docker Container Locally
+
+```bash
+# Copy environment file
+cp .env.example .env
+# Edit .env with your configuration
+
+# Run container
+docker run -d \
+  --name context-compiler \
+  --env-file .env \
+  -p 8080:8080 \
+  context-compiler:latest
+```
+
+### Test Container
+
+```bash
+curl http://localhost:8080/
+curl http://localhost:8080/health
+curl http://localhost:8080/docs
+```
+
+## ⚙️ Production Configuration
+
+### Required Environment Variables
+
+For production deployment, configure these variables:
+
+```bash
+# Environment
+CONTEXT_COMPILER_APP_ENV=production
+CONTEXT_COMPILER_LOG_LEVEL=INFO
+
+# CORS - Your frontend URL
+CONTEXT_COMPILER_CORS_ALLOWED_ORIGINS=https://your-frontend.vercel.app
+
+# ClickHouse
+CONTEXT_COMPILER_CLICKHOUSE_HOST=your-host.clickhouse.cloud
+CONTEXT_COMPILER_CLICKHOUSE_PORT=8443
+CONTEXT_COMPILER_CLICKHOUSE_SECURE=true
+CONTEXT_COMPILER_CLICKHOUSE_USERNAME=your-username
+CONTEXT_COMPILER_CLICKHOUSE_PASSWORD=your-password
+
+# LLM Provider
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=your-api-key
+LLM_MODEL=gpt-4o-mini
+```
+
+See `.env.example` for all available configuration options.
 
 ## Requirements
 
@@ -20,13 +93,6 @@ Run these commands from the repository root:
 ```bash
 cp .env.example .env
 uv sync
-```
-
-To configure and launch the complete local stack in one command, see
-[Run the complete application](docs/RUN_APPLICATION.md) or run:
-
-```bash
-./scripts/setup-and-run.sh up
 ```
 
 For a local ClickHouse instance using Docker:
@@ -75,6 +141,10 @@ contains one idempotent `CREATE` or `ALTER` statement. Context metadata includes
 - `context_issues`
 - `context_changelog`
 - `query_evidence`
+- `ai_traces` and `ai_spans`
+- `ai_recommendations`, `ai_evaluations`, and `ai_judge_results`
+- `reasoning_provenance`
+- `baseline_metric_snapshots`
 
 Bootstrap the byte-exact official context after migrations:
 
@@ -86,6 +156,34 @@ uv run python -m app.cli bootstrap-context --source docs/base_context.md
 The SHA-derived bootstrap is idempotent. It stores the official source unchanged as provenance,
 while prompts receive only a bounded redacted projection. CTX-001 through CTX-010 are typed audit
 findings; K1 through K7 remain explicitly unproven hypotheses.
+
+## Atlys baseline and feature benchmark
+
+After the eight source event tables are loaded, precompute the aggregate evidence used by the
+Instrumentation Agent:
+
+```bash
+uv run python -m app.cli precompute-baseline
+```
+
+The snapshot is fingerprinted from logical table row/time coverage, so repeat runs reuse the same
+snapshot until source data changes. It stores ordered session/application funnels, pay-to-purchase
+conversion, document quality, currency-separated revenue, and source health. Prompts receive only
+aggregate results, checksums, and evidence IDs—never the SQL or raw rows. Every pipeline run checks
+the fingerprint before contract generation and recomputes only when necessary.
+
+Run every complete `spec.md` + `events.ndjson` package under a directory with:
+
+```bash
+uv run python -m app.cli benchmark-atlys \
+  --specs-root Atlys/specs \
+  --output artifacts/atlys_benchmark.json
+```
+
+Package discovery is dynamic; placing the sixth feature in the same format includes it without a
+code change. Each package produces a Langfuse root trace, validated contract, dry-run ClickHouse
+DDL, and schema-quality checks for field mapping, partitioning, workflow ordering, TTL, aggregate
+state syntax, and funnel-view presence.
 
 ## Run the API
 
@@ -104,6 +202,52 @@ CONTEXT_COMPILER_CORS_ALLOW_CREDENTIALS=false
 
 Only enable credentials when the frontend actually uses cookie-based authentication. Wildcard
 origins cannot be combined with credentials.
+
+## Langfuse Tracing (Optional)
+
+Context Compiler includes comprehensive **Langfuse** integration for observability of all agent activities, LLM generations, and analytical workflows. This provides:
+
+- ✅ Full tracing of all three agents (Instrumentation, Analytics, Context)
+- ✅ Token usage tracking and cost analysis
+- ✅ Agent execution graphs and nested observations
+- ✅ Proper observation types (`generation`, `agent`, `span`)
+- ✅ Input/output tracking with sensitive data masking
+- ✅ Feature tagging and metadata for filtering
+
+### Quick Setup
+
+1. Sign up for Langfuse (free tier available): [langfuse.com/cloud](https://langfuse.com/cloud)
+2. Create a project and get your API keys (Settings → API Keys)
+3. Add credentials to `.env`:
+
+```dotenv
+CONTEXT_COMPILER_LANGFUSE_ENABLED=true
+CONTEXT_COMPILER_LANGFUSE_PUBLIC_KEY=pk-lf-...
+CONTEXT_COMPILER_LANGFUSE_SECRET_KEY=sk-lf-...
+CONTEXT_COMPILER_LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+4. Run the API and view traces in the Langfuse dashboard
+
+For detailed documentation, see **[docs/LANGFUSE_INTEGRATION.md](docs/LANGFUSE_INTEGRATION.md)**
+and **[docs/AI_OBSERVABILITY_ARCHITECTURE.md](docs/AI_OBSERVABILITY_ARCHITECTURE.md)**.
+
+Build and run the internal TypeScript recommendation release boundary before starting the API:
+
+```bash
+npm install
+npm run build
+npm run start:observability
+```
+
+Set `CONTEXT_COMPILER_RECOMMENDATION_EVALUATOR_URL` to
+`http://127.0.0.1:4319/v1/recommendations/evaluate`. In production this setting is mandatory;
+the FastAPI pipeline never publishes a recommendation when the configured boundary is
+unreachable or returns a stale/evidence/evaluation block.
+
+The sibling `../ui` project’s **Observability** navigation item opens the in-application Langfuse
+and AI-quality dashboard. Restart both the API and frontend after pulling UI changes; the panel
+refreshes automatically after each compiler journey.
 
 Verify the service and ClickHouse separately:
 
@@ -217,6 +361,10 @@ Format, lint, and run the unit tests:
 uv run ruff format .
 uv run ruff check .
 uv run pytest
+npm install
+npm run typecheck
+npm test
+npm run build
 ```
 
 ## Architecture

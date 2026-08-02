@@ -5,8 +5,10 @@ from pydantic import BaseModel, Field
 
 
 class ApplicationHealth(BaseModel):
-    status: Literal["ok"] = "ok"
+    status: Literal["healthy"] = "healthy"
     service: str = "context-compiler"
+    environment: str = "production"
+    version: str = "0.1.0"
     timestamp: datetime
     langfuse: Literal["disabled", "configured", "degraded", "not_initialized"]
 
@@ -15,8 +17,15 @@ class ApplicationHealth(BaseModel):
         cls,
         *,
         langfuse: Literal["disabled", "configured", "degraded", "not_initialized"],
+        environment: str = "production",
+        version: str = "0.1.0",
     ) -> "ApplicationHealth":
-        return cls(timestamp=datetime.now(UTC), langfuse=langfuse)
+        return cls(
+            timestamp=datetime.now(UTC),
+            langfuse=langfuse,
+            environment=environment,
+            version=version,
+        )
 
 
 class ClickHouseHealth(BaseModel):

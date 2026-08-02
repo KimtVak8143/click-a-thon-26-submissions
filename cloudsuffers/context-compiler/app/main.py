@@ -19,8 +19,10 @@ from app.clickhouse.repository import ClickHouseHealthRepository
 from app.context.repository import ClickHouseContextRepository, ContextRepositoryProtocol
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.metrics import configure_otel, instrument_fastapi
 from app.core.tracing import configure_langfuse, shutdown_langfuse
 from app.llm.provider import OpenAICompatibleProvider, StructuredGenerationProvider
+from app.metrics.baseline import BaselineMetricsService
 from app.profiling.profiler import ProfilerOptions, SourceProfiler
 from app.services.health import HealthService
 
@@ -34,6 +36,7 @@ def create_app(
     schema_planner: SchemaPlanner | None = None,
     context_agent: ContextAgent | None = None,
     analytics_agent: AnalyticsAgent | None = None,
+    baseline_metrics_service: BaselineMetricsService | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings.log_level)
@@ -75,10 +78,22 @@ def create_app(
         analytical_database=app_settings.clickhouse_database,
         metadata_database=app_settings.clickhouse_metadata_database,
     )
+    baseline_metrics_instance = baseline_metrics_service or BaselineMetricsService(
+        lambda: build_clickhouse_client(app_settings),
+        app_settings.clickhouse_database,
+        app_settings.clickhouse_metadata_database,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        # Configure OpenTelemetry (traces + metrics to ClickHouse)
+        trace_provider, meter_provider = configure_otel()
+        application.state.otel_trace_provider = trace_provider
+        application.state.otel_meter_provider = meter_provider
+        
+        # Configure Langfuse (AI observability)
         application.state.langfuse = configure_langfuse(app_settings)
+        
         logger.info(
             "application_started",
             extra={"app_env": app_settings.app_env, "version": __version__},
@@ -110,6 +125,10 @@ def create_app(
                 analytics_agent_instance.close()
             except Exception:
                 logger.warning("analytics_agent_shutdown_failed")
+            try:
+                baseline_metrics_instance.close()
+            except Exception:
+                logger.warning("baseline_metrics_shutdown_failed")
             shutdown_langfuse(application.state.langfuse)
             logger.info("application_stopped")
 
@@ -134,12 +153,26 @@ def create_app(
     app.state.schema_planner = schema_planner_instance
     app.state.context_agent = context_agent_instance
     app.state.analytics_agent = analytics_agent_instance
+    app.state.baseline_metrics = baseline_metrics_instance
     app.state.langfuse = None
     app.include_router(health_router)
     app.include_router(profiles_router)
     app.include_router(contracts_router)
     app.include_router(pipeline_router)
     app.include_router(dashboard_router)
+    
+    @app.get("/")
+    def root() -> dict[str, str]:
+        """Root endpoint for service verification."""
+        return {
+            "service": "Context Compiler",
+            "status": "running",
+            "version": __version__,
+        }
+    
+    # Instrument FastAPI with OpenTelemetry (automatic request tracing)
+    instrument_fastapi(app)
+    
     return app
 
 

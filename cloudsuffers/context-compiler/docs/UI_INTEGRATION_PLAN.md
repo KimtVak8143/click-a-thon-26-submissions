@@ -1,12 +1,17 @@
 # UI Integration Plan
 
+The frontend is maintained as the sibling project `cloudsuffers/ui`; the backend is
+`cloudsuffers/context-compiler`. Neither deployment root contains the other.
+
 ## Architecture boundary
 
-The FastAPI backend stays unchanged. The React dashboard reads its public API through an Nginx same-origin proxy, and LibreChat runs as a separate Docker service with isolated persistence. This avoids adding CORS, authentication, chat, or presentation logic to the backend.
+The FastAPI backend and React frontend run independently. The browser calls the configured backend
+origin directly; local development uses `http://localhost:8000`, while Vercel uses
+`VITE_COMPILER_API_URL`. LibreChat runs as a separate Docker service with isolated persistence.
 
 ```text
 Browser
-  |-- :4173 React dashboard -- /compiler-api/* --> Nginx --> host:8000 FastAPI
+  |-- :4173 React dashboard ---------> :8000 FastAPI
   `-- :3080 LibreChat --> configured model provider
                               |-- MongoDB (conversations)
                               `-- Meilisearch (message search)

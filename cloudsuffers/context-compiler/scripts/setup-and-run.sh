@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-UI_DIR="${REPO_ROOT}/ui"
+UI_DIR="$(cd "${REPO_ROOT}/.." && pwd)/ui"
 RUNTIME_DIR="${REPO_ROOT}/.run"
 UV_CACHE_DIR="${RUNTIME_DIR}/uv-cache"
 BACKEND_PID_FILE="${RUNTIME_DIR}/backend.pid"
@@ -109,6 +109,13 @@ initialize_backend() {
     run_backend "${REPO_ROOT}/.venv/bin/python" -m app.cli \
       bootstrap-context --source docs/base_context.md
   )
+  info "Precomputing metrics from the eight existing Atlys tables..."
+  if ! (
+    cd "${REPO_ROOT}"
+    run_backend "${REPO_ROOT}/.venv/bin/python" -m app.cli precompute-baseline
+  ); then
+    info "WARNING: baseline metrics were not computed; load the Atlys source tables first."
+  fi
 }
 
 check_llm_configuration() {
@@ -181,9 +188,9 @@ verify_application() {
     tail -n 80 "${BACKEND_LOG}" >&2 || true
     fail "Backend did not become ready."
   }
-  wait_for_url "${FRONTEND_URL}/compiler-api/health" 30 || {
+  wait_for_url "${FRONTEND_URL}" 30 || {
     tail -n 80 "${FRONTEND_LOG}" >&2 || true
-    fail "Frontend or its backend proxy did not become ready."
+    fail "Frontend did not become ready."
   }
 
   info "Application is running:"

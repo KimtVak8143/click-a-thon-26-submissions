@@ -176,23 +176,19 @@ def test_repair_receives_source_profile_derived_metric_hints(profile) -> None:
     assert '"grounded_denominator_example": "count(express_checkout_shown)"' in repair_text
 
 
-def test_repair_that_modifies_preserved_value_is_rejected_then_restored(profile) -> None:
+def test_repair_that_modifies_preserved_value_is_deterministically_restored(profile) -> None:
     invalid = contract_data(profile)
     invalid["funnels"][0]["ordered_events"].append("invented_observed_event")
     drifted = contract_data(profile)
     drifted["metrics"][0]["name"] = "Unrelated drift"
-    restored = contract_data(profile)
-    provider = FakeStructuredGenerationProvider(
-        [encoded(invalid), encoded(drifted), encoded(restored)]
-    )
+    provider = FakeStructuredGenerationProvider([encoded(invalid), encoded(drifted)])
 
     result = asyncio.run(InstrumentationAgent(provider).generate_contract(SPEC, profile))
 
     assert result.validation_status == "valid"
-    assert result.attempts == 3
-    second_repair_text = provider.requests[2].messages[-1].content
-    assert "repair_modified_unrelated_field" in second_repair_text
-    assert '"must_correct": ["metrics.0"]' in second_repair_text
+    assert result.attempts == 2
+    assert result.analytics_contract is not None
+    assert result.analytics_contract.metrics[0].name != "Unrelated drift"
 
 
 def test_repair_scope_allows_addition_only_for_array_level_missing_error(profile) -> None:
@@ -393,7 +389,6 @@ def test_trace_metadata_is_safe_and_has_required_observations(profile) -> None:
         "contract_compilation",
         "final_contract_validation",
         "prompt_construction",
-        "provider_request",
         "JSON_parsing",
         "total_generation",
     }
