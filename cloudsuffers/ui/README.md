@@ -117,6 +117,12 @@ See `.env.development.example` and `.env.production.example` for templates.
 
 ## 🎯 Scope
 
-The dashboard calls `/health`, `/health/clickhouse`, `/health/llm`, and `/pipeline/run`. LibreChat is
-intentionally a separate service; it is not presented as a Context Compiler agent until an
-OpenAI-compatible gateway, MCP server, or LibreChat Action exists.
+The dashboard calls `/health`, `/health/clickhouse`, `/health/llm`, and `/pipeline/run`.
+
+LibreChat is wired to the official [ClickHouse MCP server](https://github.com/ClickHouse/mcp-clickhouse)
+(`compose.yaml`'s `mcp-clickhouse` service), giving it live, read-only query access to the same
+ClickHouse Cloud service the backend deploys feature tables into. Set the `MCP_CLICKHOUSE_*` and
+`MCP_CLICKHOUSE_AUTH_TOKEN` variables in `.env` (see `.env.example`), then `docker compose up` — the
+`clickhouse` tool becomes available in LibreChat's chat menu. It is a separate, read-only surface for
+ad-hoc exploration; it does not call the Context Compiler backend or its own Analytics Agent
+(`POST /analytics/probe` on the backend) directly.

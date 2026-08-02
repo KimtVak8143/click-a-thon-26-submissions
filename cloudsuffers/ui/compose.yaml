@@ -48,3 +48,32 @@ services:
     volumes:
       - ./meili-data:/meili_data
     restart: unless-stopped
+
+  # Official ClickHouse MCP server (https://github.com/ClickHouse/mcp-clickhouse),
+  # so LibreChat can run live, read-only queries against the same ClickHouse Cloud
+  # service the Context Compiler backend deploys tables into. Read-only by default
+  # (CLICKHOUSE_ALLOW_WRITE_ACCESS unset), independent of app-level credentials.
+  mcp-clickhouse:
+    image: python:3.12-slim
+    container_name: context-compiler-mcp-clickhouse
+    command: sh -c "pip install --no-cache-dir mcp-clickhouse==0.4.1 && exec mcp-clickhouse"
+    environment:
+      CLICKHOUSE_HOST: "${MCP_CLICKHOUSE_HOST}"
+      CLICKHOUSE_PORT: "${MCP_CLICKHOUSE_PORT:-8443}"
+      CLICKHOUSE_USER: "${MCP_CLICKHOUSE_USER}"
+      CLICKHOUSE_PASSWORD: "${MCP_CLICKHOUSE_PASSWORD}"
+      CLICKHOUSE_SECURE: "${MCP_CLICKHOUSE_SECURE:-true}"
+      CLICKHOUSE_DATABASE: "${MCP_CLICKHOUSE_DATABASE}"
+      CLICKHOUSE_MCP_SERVER_TRANSPORT: http
+      CLICKHOUSE_MCP_BIND_HOST: 0.0.0.0
+      CLICKHOUSE_MCP_BIND_PORT: "8001"
+      # Static bearer tokens still trip LibreChat's MCP client into permanently
+      # treating the server as OAuth-required (its 401 response is indistinguishable
+      # from an OAuth challenge to that client), so auth is disabled here instead.
+      # Development/local-demo only — this is only reachable inside the docker
+      # network plus whatever reaches the host's mapped 8001 port. Read access is
+      # still the only thing exposed: CLICKHOUSE_ALLOW_WRITE_ACCESS stays unset.
+      CLICKHOUSE_MCP_AUTH_DISABLED: "true"
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
