@@ -4,7 +4,7 @@ Context Compiler Agent - AI assistant with access to context compiler tools.
 
 from typing import Any
 from app.core.config import get_settings
-from app.clickhouse.client import get_clickhouse_client
+from app.clickhouse.client import build_clickhouse_client
 
 
 class ContextAgentService:
@@ -81,41 +81,39 @@ class ContextAgentService:
             Context version information
         """
         try:
-            async with get_clickhouse_client() as client:
-                if context_key:
-                    query = """
-                        SELECT 
-                            context_key,
-                            version,
-                            created_at,
-                            length(context_data) as data_size
-                        FROM context_versions
-                        WHERE context_key = %(context_key)s
-                        ORDER BY version DESC
-                        LIMIT 10
-                    """
-                    params = {"context_key": context_key}
-                else:
-                    query = """
-                        SELECT 
-                            context_key,
-                            count() as version_count,
-                            max(version) as latest_version,
-                            max(created_at) as last_updated
-                        FROM context_versions
-                        GROUP BY context_key
-                        ORDER BY last_updated DESC
-                        LIMIT 20
-                    """
-                    params = {}
-                
-                results = await client.query(query, params)
-                
-                return {
-                    "success": True,
-                    "contexts": [dict(row) for row in results],
-                    "total": len(results)
-                }
+            client = build_clickhouse_client(self.settings)
+            if context_key:
+                query = f"""
+                    SELECT 
+                        context_key,
+                        version,
+                        created_at,
+                        length(context_data) as data_size
+                    FROM context_versions
+                    WHERE context_key = '{context_key}'
+                    ORDER BY version DESC
+                    LIMIT 10
+                """
+            else:
+                query = """
+                    SELECT 
+                        context_key,
+                        count() as version_count,
+                        max(version) as latest_version,
+                        max(created_at) as last_updated
+                    FROM context_versions
+                    GROUP BY context_key
+                    ORDER BY last_updated DESC
+                    LIMIT 20
+                """
+            
+            results = client.query(query)
+            
+            return {
+                "success": True,
+                "contexts": [dict(zip(results.column_names, row)) for row in results.result_rows],
+                "total": len(results.result_rows)
+            }
         except Exception as e:
             return {
                 "success": False,
