@@ -29,7 +29,11 @@ COPY --from=builder /app/.venv /app/.venv
 COPY app ./app
 COPY migrations ./migrations
 COPY docs ./docs
+COPY scripts ./scripts
 COPY pyproject.toml ./
+
+# Make scripts executable
+RUN chmod +x scripts/*.sh
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \
@@ -37,12 +41,12 @@ RUN useradd -m -u 1000 appuser && \
 
 USER appuser
 
-# Expose port
-EXPOSE 8080
+# Expose ports (FastAPI + MCP)
+EXPOSE 8080 8002
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:${PORT:-8080}/health', timeout=5.0)" || exit 1
 
-# Start command (using shell to handle PORT env var)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# Start command (using railway-start.sh for multi-process management)
+CMD ["bash", "scripts/railway-start.sh"]
