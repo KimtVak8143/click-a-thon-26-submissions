@@ -3,7 +3,7 @@ Analytics Agent - AI assistant for ClickHouse analytics queries.
 """
 
 from typing import Any
-from app.clickhouse.client import get_clickhouse_client
+from app.clickhouse.client import build_clickhouse_client
 from app.core.config import get_settings
 
 
@@ -29,44 +29,43 @@ class AnalyticsAgentService:
             Event data with counts and samples
         """
         try:
-            async with get_clickhouse_client() as client:
-                if event_names:
-                    placeholders = ", ".join([f"%(event_{i})s" for i in range(len(event_names))])
-                    params = {f"event_{i}": name for i, name in enumerate(event_names)}
-                    query = f"""
-                        SELECT 
-                            event_name,
-                            count() as event_count,
-                            min(timestamp) as first_seen,
-                            max(timestamp) as last_seen
-                        FROM events
-                        WHERE event_name IN ({placeholders})
-                        GROUP BY event_name
-                        ORDER BY event_count DESC
-                        LIMIT %(limit)s
-                    """
-                    params["limit"] = limit
-                else:
-                    query = """
-                        SELECT 
-                            event_name,
-                            count() as event_count,
-                            min(timestamp) as first_seen,
-                            max(timestamp) as last_seen
-                        FROM events
-                        GROUP BY event_name
-                        ORDER BY event_count DESC
-                        LIMIT %(limit)s
-                    """
-                    params = {"limit": limit}
-                
-                results = await client.query(query, params)
-                
-                return {
-                    "success": True,
-                    "events": [dict(row) for row in results],
-                    "total": len(results)
-                }
+            client = build_clickhouse_client(self.settings)
+            if event_names:
+                placeholders = ", ".join([f"%({i})s" for i in range(len(event_names))])
+                params = {str(i): name for i, name in enumerate(event_names)}
+                query = f"""
+                    SELECT 
+                        event_name,
+                        count() as event_count,
+                        min(timestamp) as first_seen,
+                        max(timestamp) as last_seen
+                    FROM events
+                    WHERE event_name IN ({placeholders})
+                    GROUP BY event_name
+                    ORDER BY event_count DESC
+                    LIMIT {limit}
+                """
+            else:
+                query = f"""
+                    SELECT 
+                        event_name,
+                        count() as event_count,
+                        min(timestamp) as first_seen,
+                        max(timestamp) as last_seen
+                    FROM events
+                    GROUP BY event_name
+                    ORDER BY event_count DESC
+                    LIMIT {limit}
+                """
+                params = {}
+            
+            results = client.query(query, parameters=params)
+            
+            return {
+                "success": True,
+                "events": [dict(zip(results.column_names, row)) for row in results.result_rows],
+                "total": len(results.result_rows)
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -84,20 +83,101 @@ class AnalyticsAgentService:
             Query results
         """
         try:
-            async with get_clickhouse_client() as client:
-                # Safety check - only allow SELECT queries
-                if not sql.strip().upper().startswith("SELECT"):
-                    return {
-                        "success": False,
-                        "error": "Only SELECT queries are allowed"
-                    }
-                
-                results = await client.query(sql)
-                
+            # Safety check - only allow SELECT queries
+            if not sql.strip().upper().startswith("SELECT"):
                 return {
-                    "success": True,
-                    "rows": [dict(row) for row in results],
-                    "row_count": len(results)
+                    "success": False,
+                    "error": "Only SELECT queries are allowed"
+                }
+            
+            client = build_clickhouse_client(self.settings)
+            results = client.query(sql)
+            
+            return {
+                "success": True,
+                "rows": [dict(zip(results.column_names, row)) for row in results.result_rows],
+                "row_count": len(results.result_rows)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def get_metrics_summary(self) -> dict[str, Any]:
+        """
+        Get a summary of available metrics and their latest values.
+        
+        Returns:
+            Summary of metrics from context_metrics table
+        """
+        try:
+            client = build_clickhouse_client(self.settings)
+            query = """
+                SELECT 
+                    metric_name,
+                    metric_type,
+                    count() as data_points,
+                    max(recorded_at) as last_recorded
+                FROM context_metrics
+                GROUP BY metric_name, metric_type
+                ORDER BY last_recorded DESC
+                LIMIT 50
+            """
+            
+            results = client.query(query)
+            
+            return {
+                "success": True,
+                "metrics": [dict(zip(results.column_names, row)) for row in results.result_rows],
+                "total": len(results.result_rows)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def get_pipeline_runs(self, limit: int = 10) -> dict[str, Any]:
+        """
+        Get recent pipeline run results.
+        
+        Args:
+            limit: Number of runs to return
+            
+        Returns:
+            Recent pipeline runs with status and timing
+        """
+        try:
+            client = build_clickhouse_client(self.settings)
+            query = f"""
+                SELECT 
+                    run_id,
+                    status,
+                    started_at,
+                    completed_at,
+                    error_message
+                FROM pipeline_runs
+                ORDER BY started_at DESC
+                LIMIT {limit}
+            """
+            
+            results = client.query(query)
+            
+            return {
+                "success": True,
+                "runs": [dict(zip(results.column_names, row)) for row in results.result_rows],
+                "total": len(results.result_rows)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+
+# Singleton instance
+analytics_agent = AnalyticsAgentService()
                 }
         except Exception as e:
             return {
