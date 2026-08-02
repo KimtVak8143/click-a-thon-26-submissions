@@ -415,15 +415,11 @@ class InstrumentationAgent:
                     if parsed_candidate is not None:
                         decoded = decode_contract_intent_envelope(parsed_candidate)
                         parsed_candidate = decoded.value
-                        deterministic_normalization = (
-                            _normalize_deterministic_candidate(
-                                parsed_candidate,
-                                feature_spec,
-                                source_profile,
-                                previous_validation_errors,
-                            )
-                            if attempt
-                            else {}
+                        deterministic_normalization = _normalize_deterministic_candidate(
+                            parsed_candidate,
+                            feature_spec,
+                            source_profile,
+                            previous_validation_errors,
                         )
                         if deterministic_normalization:
                             envelope_metadata["deterministic_normalization"] = (
@@ -1273,25 +1269,24 @@ def _normalize_deterministic_candidate(
             candidate["relationships"] = kept
             counts["invalid_relationships_removed"] = removed
 
-    if "observed_dimension_semantic_type_mismatch" in error_codes:
-        identifier_paths = {
-            identifier.field_path for identifier in source_profile.candidate_identifiers
-        }
-        field_profiles = {field.path: field for field in source_profile.fields}
-        for dimension in candidate.get("dimensions", []):
-            if not isinstance(dimension, dict):
-                continue
-            field_path = dimension.get("field_path")
-            if not isinstance(field_path, str) or field_path not in field_profiles:
-                continue
-            expected = infer_observed_semantic_type(
-                field_profiles[field_path], is_identifier=field_path in identifier_paths
-            ).value
-            if dimension.get("semantic_type") != expected:
-                dimension["semantic_type"] = expected
-                counts["dimension_semantic_types_corrected"] = (
-                    counts.get("dimension_semantic_types_corrected", 0) + 1
-                )
+    identifier_paths = {
+        identifier.field_path for identifier in source_profile.candidate_identifiers
+    }
+    field_profiles = {field.path: field for field in source_profile.fields}
+    for dimension in candidate.get("dimensions", []):
+        if not isinstance(dimension, dict):
+            continue
+        field_path = dimension.get("field_path")
+        if not isinstance(field_path, str) or field_path not in field_profiles:
+            continue
+        expected = infer_observed_semantic_type(
+            field_profiles[field_path], is_identifier=field_path in identifier_paths
+        ).value
+        if dimension.get("semantic_type") != expected:
+            dimension["semantic_type"] = expected
+            counts["dimension_semantic_types_corrected"] = (
+                counts.get("dimension_semantic_types_corrected", 0) + 1
+            )
 
     metrics = candidate.get("metrics")
     primary_entity_id = candidate.get("primary_entity_id")
@@ -1318,12 +1313,7 @@ def _normalize_deterministic_candidate(
             f"{metric.get('id', '')} {metric.get('name', '')} "
             f"{metric.get('description', '')}".casefold()
         )
-        if (
-            "ambiguous_conversion_metric" in error_codes
-            and metric.get("id") == "conversion_rate"
-            and start_event
-            and end_event
-        ):
+        if metric.get("id") == "conversion_rate" and start_event and end_event:
             metric["id"] = f"{end_event}_per_{start_event}_rate"
             counts["ambiguous_metric_ids_rewritten"] = (
                 counts.get("ambiguous_metric_ids_rewritten", 0) + 1

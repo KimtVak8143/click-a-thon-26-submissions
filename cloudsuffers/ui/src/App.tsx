@@ -179,8 +179,12 @@ export default function App() {
       await animateStagesTo(finalStageIndex(runResult.status));
       setStageOutcome(outcomeForStatus(runResult.status));
       setResult(runResult);
-      await refreshDashboard();
-      window.setTimeout(() => void refreshDashboard(), 5_000);
+      // Refreshing the observability panel is an independent concern from the pipeline
+      // run itself, so it must not be awaited here — doing so would keep the button
+      // disabled until the dashboard fetch finishes, well after the result is visible.
+      void refreshDashboard().then(() => {
+        window.setTimeout(() => void refreshDashboard(), 5_000);
+      });
     } catch (error) {
       clearStageTimers();
       setStageOutcome("error");
