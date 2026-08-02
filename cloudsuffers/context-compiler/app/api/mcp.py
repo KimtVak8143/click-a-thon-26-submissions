@@ -44,7 +44,7 @@ async def mcp_head() -> None:
 
 class MCPRequest(StrictModel):
     jsonrpc: str = Field(default="2.0")
-    method: str
+    method: str = Field(default="")  # Allow empty for malformed requests
     params: dict[str, Any] | None = Field(default=None)
     id: int | str | None = None
 

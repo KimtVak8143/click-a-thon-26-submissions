@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -182,6 +183,17 @@ def create_app(
             "service": "Context Compiler",
             "status": "running",
             "version": __version__,
+        }
+    
+    @app.get("/.well-known/oauth-protected-resource")
+    @app.get("/.well-known/oauth-protected-resource/mcp")
+    def oauth_metadata() -> dict[str, Any]:
+        """OAuth metadata endpoint - indicates no OAuth required."""
+        return {
+            "resource": "https://click-a-thon-26-submissions-production.up.railway.app/mcp",
+            "authorization_servers": [],
+            "bearer_methods_supported": [],
+            "resource_documentation": "https://click-a-thon-26-submissions-production.up.railway.app/docs"
         }
     
     # Instrument FastAPI with OpenTelemetry (automatic request tracing)
